@@ -112,7 +112,7 @@ public class GameHub : Hub
     public async Task NightAction(string userId, int targetSlotNumber)
     {
         var res = _gameService.NightAction(userId, targetSlotNumber);
-        await Clients.Caller.SendAsync("OnActionNotification", res.Message);
+        await Clients.Caller.SendAsync("OnNightActionResult", res.Message);
         await GetMyState(userId);
     }
 

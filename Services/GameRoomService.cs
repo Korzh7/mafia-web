@@ -9,8 +9,8 @@ public class GameRoomService
     private readonly List<PlayerSlot> _slots = new(8);
     private readonly List<GameEvent> _events = new();
     private readonly List<int> _nominatedSlots = new();
-    private readonly Dictionary<string, string> _sheriffChecks = new(); // slot -> "Красный"/"Черный"
-    private readonly Dictionary<string, string> _donChecks = new();     // slot -> "Шериф"/"Не шериф"
+    private readonly Dictionary<int, string> _sheriffChecks = new(); // slot -> "Красный"/"Черный"
+    private readonly Dictionary<int, string> _donChecks = new();     // slot -> "Шериф"/"Не шериф"
 
     public GamePhase Phase { get; private set; } = GamePhase.Lobby;
     public int DayNumber { get; private set; } = 0;
@@ -289,15 +289,20 @@ public class GameRoomService
             if (actor.Role is PlayerRole.Mafia or PlayerRole.Don)
             {
                 actor.NightTargetSlot = targetSlotNumber;
-                return (true, $"Выстрел направлен в Игрока #{targetSlotNumber}.");
+                int aliveMafia = _slots.Count(s => s.IsAlive && s.Role is PlayerRole.Mafia or PlayerRole.Don);
+                if (aliveMafia == 1)
+                {
+                    return (true, $"Жертва зафиксирована: Игрок #{targetSlotNumber} ({target.Nickname}). Он будет убит утром!");
+                }
+                return (true, $"Ваш голос за отстрел направлен в Игрока #{targetSlotNumber} ({target.Nickname}). Ждем напарника.");
             }
 
             if (actor.Role == PlayerRole.Sheriff)
             {
                 var isBlack = target.Role is PlayerRole.Mafia or PlayerRole.Don;
-                var res = isBlack ? "Черный (Мафия)" : "Красный (Мирный)";
-                _sheriffChecks[targetSlotNumber.ToString()] = res;
-                return (true, $"Проверка игрока #{targetSlotNumber}: {res}!");
+                var res = isBlack ? "ЧЕРНЫЙ (МАФИЯ)" : "КРАСНЫЙ (МИРНЫЙ)";
+                _sheriffChecks[targetSlotNumber] = res;
+                return (true, $"Результат проверки: Игрок #{targetSlotNumber} ({target.Nickname}) — {res}!");
             }
 
             return (false, "У вашей роли нет ночного действия.");
@@ -662,6 +667,8 @@ public class GameRoomService
             bool canSpeak = Phase == GamePhase.DayDiscussion && mySlot != null && mySlot.IsAlive && mySlot.SlotNumber == CurrentSpeakerSlot;
             if (Phase == GamePhase.NightZero && isMeMafia) canSpeak = true;
 
+            int aliveMafiaCount = _slots.Count(s => s.IsAlive && s.Role is PlayerRole.Mafia or PlayerRole.Don);
+
             return new PublicGameStateDto
             {
                 Phase = Phase,
@@ -694,6 +701,9 @@ public class GameRoomService
                 CanVoteNow = Phase == GamePhase.Voting && mySlot != null && mySlot.IsAlive,
                 CanShootNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && isMeMafia,
                 CanCheckNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && (mySlot.Role is PlayerRole.Sheriff or PlayerRole.Don),
+                KnownChecks = (mySlot?.Role == PlayerRole.Sheriff) ? new Dictionary<int, string>(_sheriffChecks) : new(),
+                MyNightTargetSlot = mySlot?.NightTargetSlot,
+                AliveMafiaCount = aliveMafiaCount,
                 Winner = Winner
             };
         }

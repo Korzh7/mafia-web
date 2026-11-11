@@ -113,6 +113,10 @@ function initSignalR() {
     alert("⚠️ " + msg);
   });
 
+  connection.on("OnNightActionResult", (msg) => {
+    showNightBanner(msg);
+  });
+
   connection.on("OnActionNotification", (msg) => {
     console.log("Действие:", msg);
   });
@@ -303,6 +307,24 @@ function renderSeats(state) {
       playerArea.appendChild(roleBadge);
     }
 
+    // Проверка шерифа (видна только шерифу)
+    if (state.knownChecks && state.knownChecks[slot.slotNumber]) {
+      const checkRes = state.knownChecks[slot.slotNumber];
+      const checkBadge = document.createElement('div');
+      checkBadge.className = 'check-result-badge ' + (checkRes.includes('ЧЕРНЫЙ') ? 'check-black' : 'check-red');
+      checkBadge.textContent = '🔍 ' + checkRes;
+      playerArea.appendChild(checkBadge);
+    }
+
+    // Выстрел мафии (виден мафии)
+    if (state.myNightTargetSlot === slot.slotNumber) {
+      card.classList.add('targeted-kill');
+      const killBadge = document.createElement('div');
+      killBadge.className = 'target-kill-badge';
+      killBadge.textContent = '🎯 ВЫСТРЕЛ МАФИИ';
+      playerArea.appendChild(killBadge);
+    }
+
     card.appendChild(playerArea);
 
     const actions = document.createElement('div');
@@ -349,17 +371,21 @@ function renderSeats(state) {
 
       if (state.phase === 4 && slot.isAlive && !isMe) {
         if (state.canShootNow) {
+          const isTarget = state.myNightTargetSlot === slot.slotNumber;
           const btnShoot = document.createElement('button');
-          btnShoot.className = 'btn btn-danger';
-          btnShoot.textContent = '🎯 Выстрелить';
+          btnShoot.className = isTarget ? 'btn btn-danger' : 'btn btn-danger';
+          btnShoot.style.opacity = isTarget ? '1' : '0.85';
+          btnShoot.textContent = isTarget ? '🎯 Выбрана жертвой' : '🎯 Выстрелить';
           btnShoot.onclick = () => nightAction(slot.slotNumber);
           actions.appendChild(btnShoot);
         }
 
         if (state.canCheckNow) {
+          const alreadyChecked = state.knownChecks && state.knownChecks[slot.slotNumber];
           const btnCheck = document.createElement('button');
           btnCheck.className = 'btn btn-primary';
-          btnCheck.textContent = '🔍 Проверить';
+          btnCheck.disabled = !!alreadyChecked;
+          btnCheck.textContent = alreadyChecked ? '✓ Уже проверен' : '🔍 Проверить';
           btnCheck.onclick = () => nightAction(slot.slotNumber);
           actions.appendChild(btnCheck);
         }
@@ -482,6 +508,39 @@ function resetGame() {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     connection.invoke("ResetGame");
   }
+}
+
+function showNightBanner(msg) {
+  let banner = document.getElementById('nightActionBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'nightActionBanner';
+    const container = document.querySelector('.table-area');
+    const seats = document.getElementById('seatsGrid');
+    if (container && seats) {
+      container.insertBefore(banner, seats);
+    }
+  }
+
+  banner.className = 'night-action-banner';
+  if (msg.includes('ЧЕРНЫЙ')) {
+    banner.classList.add('banner-black');
+  } else if (msg.includes('КРАСНЫЙ')) {
+    banner.classList.add('banner-red');
+  } else if (msg.includes('Жертва') || msg.includes('Выстрел') || msg.includes('отстрел')) {
+    banner.classList.add('banner-kill');
+  }
+
+  banner.innerHTML = `
+    <div style="font-size: 1.05rem; font-weight: 700; line-height: 1.4;">${msg}</div>
+    <button class="btn" style="width: auto; padding: 4px 12px; font-size: 0.85rem;" onclick="this.parentElement.remove()">✕ Закрыть</button>
+  `;
+
+  setTimeout(() => {
+    if (banner && banner.parentElement) {
+      banner.remove();
+    }
+  }, 10000);
 }
 
 // Запуск инициализации вне зависимости от состояния загрузки DOM

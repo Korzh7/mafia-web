@@ -38,6 +38,9 @@ public class PublicGameStateDto
     public bool CanCheckNow { get; set; }
     public string? SheriffLastCheckResult { get; set; }
     public string? DonLastCheckResult { get; set; }
+    public Dictionary<int, string> KnownChecks { get; set; } = new();
+    public int? MyNightTargetSlot { get; set; }
+    public int AliveMafiaCount { get; set; }
     
     public GameWinner Winner { get; set; }
 }

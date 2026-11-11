@@ -1,18 +1,35 @@
-// Профессиональный WebRTC модуль для голосовой связи Мафии
-// Поддерживает: очередь ICE-кандидатов, обход автоплея браузеров, динамическое добавление треков и фазовый контроль
+// Профессиональный WebRTC модуль голосовой связи с поддержкой TURN-серверов,
+// обходом ограничений iOS/Android, строгой изоляцией ночной мафии и глушением мертвых
 class MafiaVoiceEngine {
   constructor() {
     this.localStream = null;
     this.audioContext = null;
     this.analyser = null;
     this.isMicEnabled = false;
-    this.peers = new Map(); // userId -> { pc, audioEl, candidateQueue, isConnected }
+    this.peers = new Map(); // userId -> { pc, audioEl, candidateQueue, remoteTrack, isConnected }
+    
+    // Надежные STUN + TURN сервера для пробития мобильных сетей и роутеров
     this.iceServers = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:openrelay.metered.ca:80' }
+      { urls: 'stun:openrelay.metered.ca:80' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ];
+
     this.lastSpeakingState = false;
   }
 
@@ -30,9 +47,10 @@ class MafiaVoiceEngine {
 
       this.isMicEnabled = true;
       this.setupAudioAnalysis();
+      this.unlockAllAudio();
       console.log("[WebRTC] Микрофон успешно получен");
 
-      // Добавляем аудиотрек во все уже созданные пир-соединения
+      // Добавляем трек во все существующие пир-соединения
       this.peers.forEach((peer, peerUserId) => {
         const senders = peer.pc.getSenders();
         const hasTrack = senders.some(s => s.track && s.track.kind === 'audio');
@@ -40,7 +58,6 @@ class MafiaVoiceEngine {
           this.localStream.getAudioTracks().forEach(track => {
             peer.pc.addTrack(track, this.localStream);
           });
-          // Инициируем обновление соединения
           this.renegotiatePeer(peerUserId, peer.pc);
         }
       });
@@ -53,12 +70,32 @@ class MafiaVoiceEngine {
     }
   }
 
+  // Снятие блокировки звука мобильных браузеров
+  unlockAllAudio() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!this.audioContext) {
+        this.audioContext = new AudioCtx();
+      }
+      if (this.audioContext.state === 'suspended') {
+        this.audioContext.resume();
+      }
+      this.peers.forEach(peer => {
+        if (peer.audioEl) {
+          peer.audioEl.play().catch(() => {});
+        }
+      });
+    } catch (e) {}
+  }
+
   // Анализ громкости для подсветки активного спикера
   setupAudioAnalysis() {
     if (!this.localStream) return;
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.audioContext = new AudioCtx();
+      if (!this.audioContext) {
+        this.audioContext = new AudioCtx();
+      }
       if (this.audioContext.state === 'suspended') {
         this.audioContext.resume();
       }
@@ -76,7 +113,7 @@ class MafiaVoiceEngine {
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const avg = sum / dataArray.length;
-        const isSpeaking = avg > 12; // Порог чувствительности
+        const isSpeaking = avg > 12;
 
         if (isSpeaking !== this.lastSpeakingState) {
           this.lastSpeakingState = isSpeaking;
@@ -91,7 +128,7 @@ class MafiaVoiceEngine {
     }
   }
 
-  // Синхронизация пиров со слотами (создаем соединение, даже если наш микрофон еще не включен, чтобы слышать других!)
+  // Синхронизация соединений для всех занятых слотов
   syncPeers(slots, myUserId) {
     slots.forEach(slot => {
       if (!slot.isOccupied || !slot.userId || slot.userId === myUserId) return;
@@ -102,7 +139,6 @@ class MafiaVoiceEngine {
       }
     });
 
-    // Очистка вышедших игроков
     for (const [peerId, peer] of this.peers.entries()) {
       const exists = slots.some(s => s.userId === peerId && s.isOccupied);
       if (!exists) {
@@ -118,10 +154,11 @@ class MafiaVoiceEngine {
     console.log("[WebRTC] Создание PeerConnection для:", peerUserId);
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
 
-    // Скрытый аудиоэлемент для звука собеседника
+    // Создаем аудиоэлемент со всеми флагами для мобильных Safari / Chrome
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
     audioEl.setAttribute('playsinline', 'true');
+    audioEl.setAttribute('webkit-playsinline', 'true');
     audioEl.setAttribute('data-peer-user-id', peerUserId);
     document.body.appendChild(audioEl);
 
@@ -129,28 +166,29 @@ class MafiaVoiceEngine {
       pc: pc,
       audioEl: audioEl,
       candidateQueue: [],
+      remoteTrack: null,
       isConnected: false
     };
 
     this.peers.set(peerUserId, peerInfo);
 
-    // Добавляем наш локальный трек, если микрофон уже получен
     if (this.localStream) {
       this.localStream.getAudioTracks().forEach(track => {
         pc.addTrack(track, this.localStream);
       });
     }
 
-    // При получении удаленного трека подключаем к audioEl
     pc.ontrack = (event) => {
       console.log("[WebRTC] Получен удаленный аудиопоток от:", peerUserId);
+      peerInfo.remoteTrack = event.track;
       audioEl.srcObject = event.streams[0];
+      audioEl.muted = false;
       audioEl.volume = 1.0;
 
       const playPromise = audioEl.play();
       if (playPromise !== undefined) {
         playPromise.catch(err => {
-          console.warn("[WebRTC] Автовоспроизведение заблокировано браузером. Звук включится после клика:", err);
+          console.warn("[WebRTC] Автовоспроизведение ожидает клика:", err);
           const unlock = () => {
             audioEl.play().catch(() => {});
             document.removeEventListener('click', unlock);
@@ -160,9 +198,13 @@ class MafiaVoiceEngine {
           document.addEventListener('touchstart', unlock);
         });
       }
+
+      // Немедленно применяем правила текущей фазы
+      if (window.currentGameState) {
+        this.applyPhaseVoiceRules(window.currentGameState);
+      }
     };
 
-    // Сбор ICE-кандидатов
     pc.onicecandidate = (event) => {
       if (event.candidate && window.connection) {
         window.connection.invoke("SendWebRtcSignal", myUserId, peerUserId, JSON.stringify({
@@ -173,11 +215,10 @@ class MafiaVoiceEngine {
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(`[WebRTC] Статус связи с ${peerUserId}:`, pc.connectionState);
+      console.log(`[WebRTC] Статус соединения с ${peerUserId}:`, pc.connectionState);
       peerInfo.isConnected = pc.connectionState === 'connected';
     };
 
-    // Определяем инициатора оффера (тот, чей userId меньше по алфавиту)
     if (myUserId < peerUserId) {
       this.renegotiatePeer(peerUserId, pc);
     }
@@ -198,7 +239,6 @@ class MafiaVoiceEngine {
       .catch(err => console.error("[WebRTC] Ошибка при создании Offer:", err));
   }
 
-  // Обработка сигналов от других игроков
   async handleSignal(senderUserId, signalStr) {
     try {
       const data = JSON.parse(signalStr);
@@ -215,7 +255,6 @@ class MafiaVoiceEngine {
         console.log("[WebRTC] Получен Offer от:", senderUserId);
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
 
-        // Сбрасываем накопленные до этого ICE-кандидаты
         while (peer.candidateQueue.length > 0) {
           const cand = peer.candidateQueue.shift();
           await pc.addIceCandidate(new RTCIceCandidate(cand));
@@ -235,14 +274,12 @@ class MafiaVoiceEngine {
         console.log("[WebRTC] Получен Answer от:", senderUserId);
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
 
-        // Сбрасываем накопленные ICE-кандидаты
         while (peer.candidateQueue.length > 0) {
           const cand = peer.candidateQueue.shift();
           await pc.addIceCandidate(new RTCIceCandidate(cand));
         }
       } else if (data.type === 'candidate' && data.candidate) {
         if (!pc.remoteDescription) {
-          // Если remoteDescription еще не установлен — кладем в очередь!
           peer.candidateQueue.push(data.candidate);
         } else {
           await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
@@ -253,47 +290,73 @@ class MafiaVoiceEngine {
     }
   }
 
-  // Управление громкостью в зависимости от фазы игры
+  // Управление звуком с гарантированным глушением на iOS/Android и изоляцией фаз
   applyPhaseVoiceRules(state) {
     const mySlot = state.slots.find(s => s.slotNumber === state.mySlotNumber);
+    const isMeAlive = mySlot ? mySlot.isAlive : true;
     const isMeMafia = mySlot && (mySlot.roleCode === 'mafia' || mySlot.roleCode === 'don');
     const myTrack = this.localStream ? this.localStream.getAudioTracks()[0] : null;
 
-    // Фаза 1 (Нулевая ночь) и Фаза 4 (Обычная ночь)
+    // 1. МЕРТВЫЙ ИГРОК: микрофон выключен всегда!
+    if (!isMeAlive) {
+      if (myTrack) myTrack.enabled = false;
+      this.peers.forEach(peer => {
+        peer.audioEl.muted = false; // Мертвый слышит живых
+        if (peer.remoteTrack) peer.remoteTrack.enabled = true;
+      });
+      return;
+    }
+
+    // 2. ФАЗА 1 (Нулевая ночь) и ФАЗА 4 (Обычная ночь)
     if (state.phase === 1 || state.phase === 4) {
       if (isMeMafia) {
-        // Мафия говорит между собой
+        // Живая мафия говорит между собой
         if (myTrack) myTrack.enabled = true;
 
         this.peers.forEach((peer, peerUserId) => {
           const peerSlot = state.slots.find(s => s.userId === peerUserId);
-          const isPeerMafia = peerSlot && (peerSlot.roleCode === 'mafia' || peerSlot.roleCode === 'don');
-          peer.audioEl.volume = isPeerMafia ? 1.0 : 0.0;
+          const isPeerMafia = peerSlot && peerSlot.isAlive && (peerSlot.roleCode === 'mafia' || peerSlot.roleCode === 'don');
+
+          // Заглушаем всех, кто не мафия!
+          peer.audioEl.muted = !isPeerMafia;
+          if (peer.remoteTrack) peer.remoteTrack.enabled = isPeerMafia;
           if (isPeerMafia) peer.audioEl.play().catch(() => {});
         });
       } else {
-        // Мирные жители спят: их микрофон выключен, мафию они не слышат
+        // Мирные жители и шериф спят: их микрофон заблокирован, мафию они НЕ слышат
         if (myTrack) myTrack.enabled = false;
         this.peers.forEach(peer => {
-          peer.audioEl.volume = 0.0;
+          peer.audioEl.muted = true;
+          if (peer.remoteTrack) peer.remoteTrack.enabled = false;
         });
       }
     } else if (state.phase === 2) {
-      // Фаза 2: Дневное обсуждение
+      // 3. ФАЗА 2: Дневное обсуждение
       const isCurrentSpeaker = state.currentSpeakerSlot === state.mySlotNumber;
       if (myTrack) {
-        myTrack.enabled = isCurrentSpeaker;
+        myTrack.enabled = isCurrentSpeaker; // Говорит только активный спикер
       }
-      this.peers.forEach(peer => {
-        peer.audioEl.volume = 1.0;
-        peer.audioEl.play().catch(() => {});
+
+      this.peers.forEach((peer, peerUserId) => {
+        const peerSlot = state.slots.find(s => s.userId === peerUserId);
+        const isPeerAlive = peerSlot ? peerSlot.isAlive : true;
+
+        // Мертвых игроков за столом днем не слышно!
+        peer.audioEl.muted = !isPeerAlive;
+        if (peer.remoteTrack) peer.remoteTrack.enabled = isPeerAlive;
+        if (isPeerAlive) peer.audioEl.play().catch(() => {});
       });
     } else {
-      // Лобби, Голосование, Конец игры — свободный микрофон
+      // 4. Лобби (0), Голосование (3), Конец игры (5) — свободный микрофон для всех живых
       if (myTrack) myTrack.enabled = true;
-      this.peers.forEach(peer => {
-        peer.audioEl.volume = 1.0;
-        peer.audioEl.play().catch(() => {});
+
+      this.peers.forEach((peer, peerUserId) => {
+        const peerSlot = state.slots.find(s => s.userId === peerUserId);
+        const isPeerAlive = peerSlot ? peerSlot.isAlive : true;
+
+        peer.audioEl.muted = !isPeerAlive;
+        if (peer.remoteTrack) peer.remoteTrack.enabled = isPeerAlive;
+        if (isPeerAlive) peer.audioEl.play().catch(() => {});
       });
     }
   }
