@@ -3,6 +3,7 @@ namespace MafiaWeb.Models;
 public class PublicPlayerDto
 {
     public int SlotNumber { get; set; }
+    public string? UserId { get; set; }
     public string Nickname { get; set; } = string.Empty;
     public bool IsOccupied { get; set; }
     public bool IsReady { get; set; }

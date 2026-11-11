@@ -216,6 +216,17 @@ body {
   border-color: var(--accent-blue);
 }
 
+.seat-card.speaking {
+  border-color: var(--accent-green) !important;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.7) !important;
+  animation: speak-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes speak-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgba(16, 185, 129, 0.5); }
+  50% { box-shadow: 0 0 24px rgba(16, 185, 129, 0.9); }
+}
+
 .seat-header {
   display: flex;
   justify-content: space-between;

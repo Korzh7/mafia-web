@@ -17,8 +17,23 @@ public class GameHub : Hub
 
     public async Task GetMyState(string userId)
     {
+        _gameService.UpdateConnectionId(userId, Context.ConnectionId);
         var state = _gameService.GetPublicStateForUser(userId);
         await Clients.Caller.SendAsync("OnStateUpdated", state);
+    }
+
+    public async Task SendWebRtcSignal(string senderUserId, string targetUserId, string signalData)
+    {
+        var targetConnId = _gameService.GetConnectionIdByUserId(targetUserId);
+        if (!string.IsNullOrEmpty(targetConnId))
+        {
+            await Clients.Client(targetConnId).SendAsync("OnWebRtcSignal", senderUserId, signalData);
+        }
+    }
+
+    public async Task SendVoiceActivity(string userId, bool isSpeaking)
+    {
+        await Clients.Others.SendAsync("OnVoiceActivity", userId, isSpeaking);
     }
 
     public async Task TakeSlot(string userId, string nickname, int slotNumber)

@@ -38,6 +38,26 @@ public class GameRoomService
         }
     }
 
+    public void UpdateConnectionId(string userId, string connectionId)
+    {
+        lock (_lock)
+        {
+            var slot = _slots.FirstOrDefault(s => s.UserId == userId);
+            if (slot != null)
+            {
+                slot.ConnectionId = connectionId;
+            }
+        }
+    }
+
+    public string? GetConnectionIdByUserId(string userId)
+    {
+        lock (_lock)
+        {
+            return _slots.FirstOrDefault(s => s.UserId == userId)?.ConnectionId;
+        }
+    }
+
     public (bool Success, string Message) TakeSlot(int slotNumber, string userId, string nickname, string connectionId)
     {
         lock (_lock)
@@ -596,6 +616,7 @@ public class GameRoomService
                 return new PublicPlayerDto
                 {
                     SlotNumber = s.SlotNumber,
+                    UserId = s.UserId,
                     Nickname = s.Nickname,
                     IsOccupied = !string.IsNullOrEmpty(s.UserId),
                     IsReady = s.IsReady,

@@ -9,6 +9,8 @@ if (!myUserId) {
   localStorage.setItem('mafia_user_id', myUserId);
 }
 
+window.myUserId = myUserId;
+
 // DOM элементы (инициализируются в init)
 let elNicknameDisplay = null;
 let elPhaseTitle = null;
@@ -78,6 +80,20 @@ function initSignalR() {
     .withAutomaticReconnect([0, 2000, 5000, 10000])
     .configureLogging(signalR.LogLevel.Information)
     .build();
+
+  window.connection = connection;
+
+  connection.on("OnWebRtcSignal", (senderUserId, signalStr) => {
+    if (window.mafiaVoice) {
+      window.mafiaVoice.handleSignal(senderUserId, signalStr);
+    }
+  });
+
+  connection.on("OnVoiceActivity", (userId, isSpeaking) => {
+    if (window.mafiaVoice) {
+      window.mafiaVoice.highlightSpeaker(userId, isSpeaking);
+    }
+  });
 
   connection.on("OnStateUpdated", (state) => {
     updateUI(state);
@@ -151,6 +167,34 @@ function setupEventListeners() {
     });
   }
 
+  const btnToggleMic = document.getElementById('btnToggleMic');
+  if (btnToggleMic) {
+    btnToggleMic.addEventListener('click', async () => {
+      if (window.mafiaVoice) {
+        if (!window.mafiaVoice.isMicEnabled) {
+          const success = await window.mafiaVoice.enableMicrophone();
+          if (success) {
+            btnToggleMic.textContent = '🎙️ Микрофон вкл';
+            btnToggleMic.className = 'btn btn-success';
+            btnToggleMic.style.width = 'auto';
+            if (currentGameState) {
+              window.mafiaVoice.syncPeers(currentGameState.slots, myUserId);
+              window.mafiaVoice.applyPhaseVoiceRules(currentGameState);
+            }
+          }
+        } else {
+          const track = window.mafiaVoice.localStream ? window.mafiaVoice.localStream.getAudioTracks()[0] : null;
+          if (track) {
+            track.enabled = !track.enabled;
+            btnToggleMic.textContent = track.enabled ? '🎙️ Микрофон вкл' : '🔇 Микрофон выкл';
+            btnToggleMic.className = track.enabled ? 'btn btn-success' : 'btn btn-danger';
+            btnToggleMic.style.width = 'auto';
+          }
+        }
+      }
+    });
+  }
+
   const btnToggleMute = document.getElementById('btnToggleMute');
   if (btnToggleMute) {
     btnToggleMute.addEventListener('click', (e) => {
@@ -197,6 +241,11 @@ function updateUI(state) {
   renderSeats(state);
   renderHUD(state);
   renderLog(state.recentEvents);
+
+  if (window.mafiaVoice && window.mafiaVoice.isMicEnabled) {
+    window.mafiaVoice.syncPeers(state.slots, myUserId);
+    window.mafiaVoice.applyPhaseVoiceRules(state);
+  }
 }
 
 function renderSeats(state) {
@@ -206,6 +255,7 @@ function renderSeats(state) {
   state.slots.forEach(slot => {
     const card = document.createElement('div');
     card.className = 'seat-card';
+    if (slot.userId) card.setAttribute('data-user-id', slot.userId);
 
     const isMe = state.mySlotNumber === slot.slotNumber;
     if (isMe) card.classList.add('is-me');
