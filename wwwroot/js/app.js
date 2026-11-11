@@ -200,7 +200,7 @@ function setupEventListeners() {
         if (elNicknameDisplay) elNicknameDisplay.textContent = myNickname;
         if (elModalNickname) elModalNickname.style.display = 'none';
         if (connection && connection.state === signalR.HubConnectionState.Connected) {
-          connection.invoke("GetMyState", myUserId);
+          connection.invoke("UpdateNickname", myUserId, myNickname);
         }
       }
     });
@@ -242,7 +242,9 @@ function updateTimer(seconds) {
 
 function updateUI(state) {
   const prevPhase = currentGameState ? currentGameState.phase : null;
+  const prevDeadCount = currentGameState ? currentGameState.slots.filter(s => s.isOccupied && !s.isAlive).length : 0;
   currentGameState = state;
+  const currentDeadCount = state.slots.filter(s => s.isOccupied && !s.isAlive).length;
 
   if (prevPhase !== state.phase) {
     if (state.phase === 1 || state.phase === 4) {
@@ -250,13 +252,21 @@ function updateUI(state) {
     } else {
       if (window.mafiaAudio) {
         window.mafiaAudio.stopNightAmbient();
-        window.mafiaAudio.playGavel();
+        if (currentDeadCount > prevDeadCount) {
+          window.mafiaAudio.playGunshot();
+        } else {
+          window.mafiaAudio.playGavel();
+        }
       }
     }
   }
 
+  const aliveCount = state.slots.filter(s => s.isOccupied && s.isAlive).length;
+  const occupiedCount = state.slots.filter(s => s.isOccupied).length;
+  const aliveInfo = occupiedCount > 0 && state.phase > 0 ? ` • Живых: ${aliveCount}/${occupiedCount}` : '';
+
   if (elPhaseTitle) elPhaseTitle.textContent = state.phaseTitle;
-  if (elPhaseDescription) elPhaseDescription.textContent = state.phaseDescription;
+  if (elPhaseDescription) elPhaseDescription.textContent = state.phaseDescription + aliveInfo;
   if (elTimerValue) elTimerValue.textContent = state.secondsLeft;
 
   renderSeats(state);
@@ -304,6 +314,11 @@ function renderSeats(state) {
       nomBadge.style.color = '#fff';
       nomBadge.textContent = 'Выставлен';
       header.appendChild(nomBadge);
+    } else if (!slot.isAlive && slot.isOccupied) {
+      const deadBadge = document.createElement('div');
+      deadBadge.className = 'speaker-badge speaker-dead';
+      deadBadge.textContent = '💀 Выбыл';
+      header.appendChild(deadBadge);
     }
 
     card.appendChild(header);
@@ -324,11 +339,20 @@ function renderSeats(state) {
       playerArea.appendChild(roleBadge);
     }
 
-    // Проверка шерифа (видна только шерифу)
+    // Фолы и замечания
+    if (slot.isOccupied && slot.fouls > 0) {
+      const foulsBadge = document.createElement('div');
+      foulsBadge.className = 'fouls-badge' + (slot.fouls >= 3 ? ' fouls-danger' : '');
+      foulsBadge.textContent = `⚠️ Фолы: ${slot.fouls}/4`;
+      playerArea.appendChild(foulsBadge);
+    }
+
+    // Проверка шерифа или дона
     if (state.knownChecks && state.knownChecks[slot.slotNumber]) {
       const checkRes = state.knownChecks[slot.slotNumber];
       const checkBadge = document.createElement('div');
-      checkBadge.className = 'check-result-badge ' + (checkRes.includes('ЧЕРНЫЙ') ? 'check-black' : 'check-red');
+      const isBlackOrSheriff = checkRes.includes('ЧЕРНЫЙ') || checkRes.includes('ШЕРИФ');
+      checkBadge.className = 'check-result-badge ' + (isBlackOrSheriff ? 'check-black' : 'check-red');
       checkBadge.textContent = '🔍 ' + checkRes;
       playerArea.appendChild(checkBadge);
     }
@@ -408,19 +432,30 @@ function renderSeats(state) {
         if (state.canCheckNow) {
           const alreadyChecked = state.knownChecks && state.knownChecks[slot.slotNumber];
           const hasCheckedThisNight = state.hasCheckedThisNight;
+          const isDon = state.myRoleCode === 'don';
           const btnCheck = document.createElement('button');
-          btnCheck.className = 'btn btn-primary';
+          btnCheck.className = isDon ? 'btn btn-gold' : 'btn btn-primary';
           btnCheck.disabled = !!alreadyChecked || hasCheckedThisNight;
           if (alreadyChecked) {
             btnCheck.textContent = '✓ Уже проверен';
           } else if (hasCheckedThisNight) {
             btnCheck.textContent = '✓ Проверка исчерпана';
           } else {
-            btnCheck.textContent = '🔍 Проверить';
+            btnCheck.textContent = isDon ? '🕵️ Найти Шерифа' : '🔍 Проверить';
           }
-          btnCheck.onclick = () => nightAction(slot.slotNumber);
+          btnCheck.onclick = () => isDon ? donCheck(slot.slotNumber) : nightAction(slot.slotNumber);
           actions.appendChild(btnCheck);
         }
+      }
+
+      // Назначение фола во время дня или голосования
+      if ((state.phase === 2 || state.phase === 3) && slot.isAlive && slot.isOccupied && !isMe) {
+        const btnFoul = document.createElement('button');
+        btnFoul.className = 'btn btn-foul';
+        btnFoul.textContent = '+ Фол';
+        btnFoul.title = 'Вынести предупреждение/фол';
+        btnFoul.onclick = () => addFoul(slot.slotNumber);
+        actions.appendChild(btnFoul);
       }
     }
 
@@ -533,6 +568,20 @@ function vote(targetSlot) {
 function nightAction(targetSlot) {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     connection.invoke("NightAction", myUserId, targetSlot);
+  }
+}
+
+function donCheck(targetSlot) {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    connection.invoke("DonCheck", myUserId, targetSlot);
+  }
+}
+
+function addFoul(targetSlot) {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    if (confirm(`Выписать замечание (фол) Игроку #${targetSlot}?`)) {
+      connection.invoke("AddFoul", targetSlot);
+    }
   }
 }
 

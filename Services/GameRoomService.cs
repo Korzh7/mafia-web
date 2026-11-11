@@ -25,6 +25,7 @@ public class GameRoomService
     // Ограничения правил: 1 выставление за речь и 1 проверка за ночь
     private bool _speakerNominatedThisTurn = false;
     private int? _sheriffCheckedSlotThisNight = null;
+    private int? _donCheckedSlotThisNight = null;
 
     public GameRoomService()
     {
@@ -66,6 +67,43 @@ public class GameRoomService
         lock (_lock)
         {
             return _slots.FirstOrDefault(s => s.UserId == userId)?.ConnectionId;
+        }
+    }
+
+    public void UpdateNickname(string userId, string nickname)
+    {
+        lock (_lock)
+        {
+            var slot = _slots.FirstOrDefault(s => s.UserId == userId);
+            if (slot != null && !string.IsNullOrWhiteSpace(nickname))
+            {
+                var oldNick = slot.Nickname;
+                slot.Nickname = nickname.Trim();
+                if (oldNick != slot.Nickname)
+                {
+                    AddEvent($"Игрок #{slot.SlotNumber} изменил имя на «{slot.Nickname}».", "info");
+                }
+            }
+        }
+    }
+
+    public bool CanUserSpeakNow(string userId)
+    {
+        lock (_lock)
+        {
+            var slot = _slots.FirstOrDefault(s => s.UserId == userId);
+            if (slot == null || !slot.IsAlive) return false;
+
+            if (Phase is GamePhase.Lobby or GamePhase.Voting or GamePhase.GameOver)
+                return true;
+
+            if (Phase == GamePhase.DayDiscussion)
+                return slot.SlotNumber == CurrentSpeakerSlot;
+
+            if (Phase is GamePhase.NightZero or GamePhase.Night)
+                return slot.Role is PlayerRole.Mafia or PlayerRole.Don;
+
+            return false;
         }
     }
 
@@ -172,6 +210,8 @@ public class GameRoomService
             _donChecks.Clear();
             _speakerNominatedThisTurn = false;
             _sheriffCheckedSlotThisNight = null;
+            _donCheckedSlotThisNight = null;
+            _donCheckedSlotThisNight = null;
             Winner = GameWinner.None;
 
             AddEvent("Игра началась! Наступает Нулевая ночь — договорка мафии.", "night");
@@ -347,6 +387,63 @@ public class GameRoomService
         }
     }
 
+    public (bool Success, string Message) DonCheck(string userId, int targetSlotNumber)
+    {
+        lock (_lock)
+        {
+            if (Phase != GamePhase.Night)
+                return (false, "Проверка доступна только ночью.");
+
+            var actor = _slots.FirstOrDefault(s => s.UserId == userId);
+            if (actor == null || !actor.IsAlive || actor.Role != PlayerRole.Don)
+                return (false, "Только живой Дон мафии может проводить поиск шерифа.");
+
+            if (_donCheckedSlotThisNight.HasValue)
+                return (false, "Дон уже совершил проверку этой ночью! За одну ночь можно проверить только одного игрока.");
+
+            if (targetSlotNumber < 1 || targetSlotNumber > 8)
+                return (false, "Неверный слот.");
+
+            var target = _slots[targetSlotNumber - 1];
+            if (!target.IsAlive || string.IsNullOrEmpty(target.UserId))
+                return (false, "Нельзя проверить мертвого или отсутствующего игрока.");
+
+            var isSheriff = target.Role == PlayerRole.Sheriff;
+            var res = isSheriff ? "ШЕРИФ!" : "НЕ ШЕРИФ";
+            _donChecks[targetSlotNumber] = res;
+            _donCheckedSlotThisNight = targetSlotNumber;
+            return (true, $"Проверка Дона: Игрок #{targetSlotNumber} ({target.Nickname}) — {res}!");
+        }
+    }
+
+    public (bool Success, string Message) AddFoul(int targetSlotNumber)
+    {
+        lock (_lock)
+        {
+            if (Phase is GamePhase.Lobby or GamePhase.GameOver)
+                return (false, "Фолы фиксируются во время партии.");
+
+            if (targetSlotNumber < 1 || targetSlotNumber > 8)
+                return (false, "Неверный номер игрока.");
+
+            var target = _slots[targetSlotNumber - 1];
+            if (!target.IsAlive || string.IsNullOrEmpty(target.UserId))
+                return (false, "Игрок уже выбыл или отсутствует.");
+
+            target.Fouls++;
+            if (target.Fouls >= 4)
+            {
+                target.IsAlive = false;
+                AddEvent($"Игрок #{targetSlotNumber} ({target.Nickname}) получил 4-й фол и дисквалифицирован из-за стола!", "death");
+                CheckGameOver();
+                return (true, $"Игрок #{targetSlotNumber} дисквалифицирован за 4 фола.");
+            }
+
+            AddEvent($"Игроку #{targetSlotNumber} ({target.Nickname}) вынесено замечание (фол {target.Fouls}/4).", "alert");
+            return (true, $"Фол назначен игроку #{targetSlotNumber}.");
+        }
+    }
+
     // Обработка тика таймера каждую секунду
     public void TickSecond()
     {
@@ -519,6 +616,7 @@ public class GameRoomService
         SecondsLeft = 35; // 35 секунд на стрельбу и проверки
         CurrentSpeakerSlot = null;
         _sheriffCheckedSlotThisNight = null;
+        _donCheckedSlotThisNight = null;
         _speakerNominatedThisTurn = false;
 
         // Сброс ночных целей
@@ -611,6 +709,7 @@ public class GameRoomService
             _donChecks.Clear();
             _speakerNominatedThisTurn = false;
             _sheriffCheckedSlotThisNight = null;
+            _donCheckedSlotThisNight = null;
 
             foreach (var s in _slots)
             {
@@ -744,10 +843,12 @@ public class GameRoomService
                 CanSpeakNow = canSpeak,
                 CanVoteNow = Phase == GamePhase.Voting && mySlot != null && mySlot.IsAlive,
                 CanShootNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && isMeMafia,
-                CanCheckNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && mySlot.Role == PlayerRole.Sheriff,
+                CanCheckNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && (mySlot.Role is PlayerRole.Sheriff or PlayerRole.Don),
                 HasNominatedThisTurn = _speakerNominatedThisTurn,
-                HasCheckedThisNight = _sheriffCheckedSlotThisNight.HasValue,
-                KnownChecks = (mySlot?.Role == PlayerRole.Sheriff) ? new Dictionary<int, string>(_sheriffChecks) : new(),
+                HasCheckedThisNight = (mySlot?.Role == PlayerRole.Sheriff && _sheriffCheckedSlotThisNight.HasValue) ||
+                                      (mySlot?.Role == PlayerRole.Don && _donCheckedSlotThisNight.HasValue),
+                KnownChecks = (mySlot?.Role == PlayerRole.Sheriff) ? new Dictionary<int, string>(_sheriffChecks) :
+                              (mySlot?.Role == PlayerRole.Don) ? new Dictionary<int, string>(_donChecks) : new(),
                 MyNightTargetSlot = mySlot?.NightTargetSlot,
                 AliveMafiaCount = aliveMafiaCount,
                 Winner = Winner

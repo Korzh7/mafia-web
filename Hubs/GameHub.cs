@@ -33,7 +33,17 @@ public class GameHub : Hub
 
     public async Task SendVoiceActivity(string userId, bool isSpeaking)
     {
+        if (isSpeaking && !_gameService.CanUserSpeakNow(userId))
+        {
+            return;
+        }
         await Clients.Others.SendAsync("OnVoiceActivity", userId, isSpeaking);
+    }
+
+    public async Task UpdateNickname(string userId, string nickname)
+    {
+        _gameService.UpdateNickname(userId, nickname);
+        await BroadcastStateToAllAsync();
     }
 
     public async Task TakeSlot(string userId, string nickname, int slotNumber)
@@ -114,6 +124,26 @@ public class GameHub : Hub
         var res = _gameService.NightAction(userId, targetSlotNumber);
         await Clients.Caller.SendAsync("OnNightActionResult", res.Message);
         await BroadcastStateToAllAsync();
+    }
+
+    public async Task DonCheck(string userId, int targetSlotNumber)
+    {
+        var res = _gameService.DonCheck(userId, targetSlotNumber);
+        await Clients.Caller.SendAsync("OnNightActionResult", res.Message);
+        await BroadcastStateToAllAsync();
+    }
+
+    public async Task AddFoul(int targetSlotNumber)
+    {
+        var res = _gameService.AddFoul(targetSlotNumber);
+        if (res.Success)
+        {
+            await BroadcastStateToAllAsync();
+        }
+        else
+        {
+            await Clients.Caller.SendAsync("OnErrorNotification", res.Message);
+        }
     }
 
     public async Task ResetGame()

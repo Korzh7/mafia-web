@@ -366,11 +366,34 @@ class MafiaVoiceEngine {
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Статус соединения с ${peerUserId}:`, pc.connectionState);
       peerInfo.isConnected = pc.connectionState === 'connected';
+      if (pc.connectionState === 'failed') {
+        setTimeout(() => {
+          const currentPeer = this.peers.get(peerUserId);
+          if (currentPeer && currentPeer.pc && currentPeer.pc.connectionState === 'failed') {
+            console.log(`[WebRTC] Попытка авто-восстановления связи с ${peerUserId}...`);
+            this.reconnectPeer(peerUserId);
+          }
+        }, 4000);
+      }
     };
 
     if (myUserId < peerUserId) {
       this.renegotiatePeer(peerUserId, pc);
     }
+  }
+
+  reconnectPeer(peerUserId) {
+    const peer = this.peers.get(peerUserId);
+    if (!peer) return;
+
+    console.log(`[WebRTC] Перезапуск соединения с ${peerUserId}`);
+    try {
+      if (peer.pc) peer.pc.close();
+      if (peer.audioEl) peer.audioEl.remove();
+    } catch (e) {}
+
+    this.peers.delete(peerUserId);
+    this.createPeerConnection(peerUserId, window.myUserId);
   }
 
   renegotiatePeer(peerUserId, pc) {
