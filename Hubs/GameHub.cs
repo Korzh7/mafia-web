@@ -113,7 +113,7 @@ public class GameHub : Hub
     {
         var res = _gameService.NightAction(userId, targetSlotNumber);
         await Clients.Caller.SendAsync("OnNightActionResult", res.Message);
-        await GetMyState(userId);
+        await BroadcastStateToAllAsync();
     }
 
     public async Task ResetGame()

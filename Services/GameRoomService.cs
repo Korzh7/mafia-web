@@ -8,6 +8,7 @@ public class GameRoomService
     private readonly object _lock = new();
     private readonly List<PlayerSlot> _slots = new(8);
     private readonly List<GameEvent> _events = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _userConnections = new();
     private readonly List<int> _nominatedSlots = new();
     private readonly Dictionary<int, string> _sheriffChecks = new(); // slot -> "Красный"/"Черный"
     private readonly Dictionary<int, string> _donChecks = new();     // slot -> "Шериф"/"Не шериф"
@@ -20,6 +21,10 @@ public class GameRoomService
     
     // Кандидаты на автокатастрофу (при ничьей)
     private List<int> _tieSlots = new();
+
+    // Ограничения правил: 1 выставление за речь и 1 проверка за ночь
+    private bool _speakerNominatedThisTurn = false;
+    private int? _sheriffCheckedSlotThisNight = null;
 
     public GameRoomService()
     {
@@ -40,6 +45,7 @@ public class GameRoomService
 
     public void UpdateConnectionId(string userId, string connectionId)
     {
+        _userConnections[userId] = connectionId;
         lock (_lock)
         {
             var slot = _slots.FirstOrDefault(s => s.UserId == userId);
@@ -52,6 +58,11 @@ public class GameRoomService
 
     public string? GetConnectionIdByUserId(string userId)
     {
+        if (_userConnections.TryGetValue(userId, out var connId) && !string.IsNullOrEmpty(connId))
+        {
+            return connId;
+        }
+
         lock (_lock)
         {
             return _slots.FirstOrDefault(s => s.UserId == userId)?.ConnectionId;
@@ -159,6 +170,8 @@ public class GameRoomService
             _nominatedSlots.Clear();
             _sheriffChecks.Clear();
             _donChecks.Clear();
+            _speakerNominatedThisTurn = false;
+            _sheriffCheckedSlotThisNight = null;
             Winner = GameWinner.None;
 
             AddEvent("Игра началась! Наступает Нулевая ночь — договорка мафии.", "night");
@@ -218,6 +231,9 @@ public class GameRoomService
             if (CurrentSpeakerSlot != actor.SlotNumber)
                 return (false, "Выставлять кандидатуру можно только в свою минуту речи!");
 
+            if (_speakerNominatedThisTurn)
+                return (false, "Вы уже выставили одного игрока в эту минуту! По правилам Мафии за свою речь можно выставить только одного кандидата.");
+
             if (targetSlotNumber < 1 || targetSlotNumber > 8)
                 return (false, "Неверный номер игрока.");
 
@@ -229,6 +245,7 @@ public class GameRoomService
                 return (false, $"Игрок #{targetSlotNumber} уже выставлен на голосование.");
 
             _nominatedSlots.Add(targetSlotNumber);
+            _speakerNominatedThisTurn = true;
             AddEvent($"Игрок #{actor.SlotNumber} ({actor.Nickname}) выставил на голосование Игрока #{targetSlotNumber} ({target.Nickname})!", "alert");
             return (true, $"Игрок #{targetSlotNumber} выставлен.");
         }
@@ -285,23 +302,44 @@ public class GameRoomService
                 return (false, "Неверный слот.");
 
             var target = _slots[targetSlotNumber - 1];
+            if (!target.IsAlive || string.IsNullOrEmpty(target.UserId))
+                return (false, "Нельзя выбрать мертвого или отсутствующего игрока.");
 
             if (actor.Role is PlayerRole.Mafia or PlayerRole.Don)
             {
                 actor.NightTargetSlot = targetSlotNumber;
-                int aliveMafia = _slots.Count(s => s.IsAlive && s.Role is PlayerRole.Mafia or PlayerRole.Don);
-                if (aliveMafia == 1)
+                var aliveMafia = _slots.Where(s => s.IsAlive && s.Role is PlayerRole.Mafia or PlayerRole.Don).ToList();
+                if (aliveMafia.Count <= 1)
                 {
                     return (true, $"Жертва зафиксирована: Игрок #{targetSlotNumber} ({target.Nickname}). Он будет убит утром!");
                 }
-                return (true, $"Ваш голос за отстрел направлен в Игрока #{targetSlotNumber} ({target.Nickname}). Ждем напарника.");
+
+                var partner = aliveMafia.FirstOrDefault(m => m.UserId != actor.UserId);
+                if (partner != null && partner.NightTargetSlot.HasValue)
+                {
+                    if (partner.NightTargetSlot.Value == targetSlotNumber)
+                    {
+                        return (true, $"Стрельба согласована! Жертва клана: Игрок #{targetSlotNumber} ({target.Nickname}). Он будет убит утром!");
+                    }
+                    else
+                    {
+                        var partnerTarget = _slots[partner.NightTargetSlot.Value - 1];
+                        return (true, $"Внимание: разногласие! Вы выбрали #{targetSlotNumber} ({target.Nickname}), а напарник выбрал #{partner.NightTargetSlot.Value} ({partnerTarget.Nickname}). Договоритесь до конца ночи!");
+                    }
+                }
+
+                return (true, $"Выстрел направлен в Игрока #{targetSlotNumber} ({target.Nickname}). Ожидаем выбор напарника...");
             }
 
             if (actor.Role == PlayerRole.Sheriff)
             {
+                if (_sheriffCheckedSlotThisNight.HasValue)
+                    return (false, "Шериф уже совершил проверку этой ночью! За одну ночь можно проверить только одного игрока.");
+
                 var isBlack = target.Role is PlayerRole.Mafia or PlayerRole.Don;
                 var res = isBlack ? "ЧЕРНЫЙ (МАФИЯ)" : "КРАСНЫЙ (МИРНЫЙ)";
                 _sheriffChecks[targetSlotNumber] = res;
+                _sheriffCheckedSlotThisNight = targetSlotNumber;
                 return (true, $"Результат проверки: Игрок #{targetSlotNumber} ({target.Nickname}) — {res}!");
             }
 
@@ -354,6 +392,7 @@ public class GameRoomService
         DayNumber = dayNum;
         Phase = GamePhase.DayDiscussion;
         _nominatedSlots.Clear();
+        _speakerNominatedThisTurn = false;
 
         // Спикер начинается с (DayNumber % AliveCount)
         var alive = _slots.Where(s => s.IsAlive && !string.IsNullOrEmpty(s.UserId)).OrderBy(s => s.SlotNumber).ToList();
@@ -394,6 +433,7 @@ public class GameRoomService
         {
             CurrentSpeakerSlot = alive[nextIdx].SlotNumber;
             SecondsLeft = 60;
+            _speakerNominatedThisTurn = false;
             var speaker = _slots[CurrentSpeakerSlot.Value - 1];
             AddEvent($"Слово переходит к Игроку #{speaker.SlotNumber} ({speaker.Nickname}).", "info");
         }
@@ -478,6 +518,8 @@ public class GameRoomService
         Phase = GamePhase.Night;
         SecondsLeft = 35; // 35 секунд на стрельбу и проверки
         CurrentSpeakerSlot = null;
+        _sheriffCheckedSlotThisNight = null;
+        _speakerNominatedThisTurn = false;
 
         // Сброс ночных целей
         foreach (var s in _slots) s.NightTargetSlot = null;
@@ -567,6 +609,8 @@ public class GameRoomService
             _nominatedSlots.Clear();
             _sheriffChecks.Clear();
             _donChecks.Clear();
+            _speakerNominatedThisTurn = false;
+            _sheriffCheckedSlotThisNight = null;
 
             foreach (var s in _slots)
             {
@@ -700,7 +744,9 @@ public class GameRoomService
                 CanSpeakNow = canSpeak,
                 CanVoteNow = Phase == GamePhase.Voting && mySlot != null && mySlot.IsAlive,
                 CanShootNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && isMeMafia,
-                CanCheckNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && (mySlot.Role is PlayerRole.Sheriff or PlayerRole.Don),
+                CanCheckNow = Phase == GamePhase.Night && mySlot != null && mySlot.IsAlive && mySlot.Role == PlayerRole.Sheriff,
+                HasNominatedThisTurn = _speakerNominatedThisTurn,
+                HasCheckedThisNight = _sheriffCheckedSlotThisNight.HasValue,
                 KnownChecks = (mySlot?.Role == PlayerRole.Sheriff) ? new Dictionary<int, string>(_sheriffChecks) : new(),
                 MyNightTargetSlot = mySlot?.NightTargetSlot,
                 AliveMafiaCount = aliveMafiaCount,

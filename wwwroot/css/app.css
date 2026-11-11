@@ -583,3 +583,17 @@ body {
   border-color: var(--accent-red) !important;
   box-shadow: 0 0 16px rgba(239, 68, 68, 0.5) !important;
 }
+
+.mic-prompt-bar {
+  background: linear-gradient(90deg, #1e3a8a, #2563eb);
+  color: #fff;
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  z-index: 99;
+}

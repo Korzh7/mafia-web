@@ -43,6 +43,14 @@ function init() {
   if (elNicknameDisplay) elNicknameDisplay.textContent = myNickname;
   if (elInputNickname) elInputNickname.value = myNickname;
 
+  // Немедленный автоматический запрос микрофона при входе
+  if (window.mafiaVoice) {
+    window.mafiaVoice.enableMicrophone().then(granted => {
+      const promptBar = document.getElementById('micPromptBar');
+      if (promptBar) promptBar.style.display = granted ? 'none' : 'flex';
+    });
+  }
+
   // Предварительная отрисовка 8 пустых мест, чтобы экран не был черным
   renderInitialSeats();
 
@@ -144,9 +152,36 @@ function initSignalR() {
 }
 
 function setupEventListeners() {
-  document.addEventListener('click', () => {
-    if (window.mafiaAudio) window.mafiaAudio.init();
-  }, { once: true });
+  const onUserInteract = () => {
+    if (window.mafiaVoice) {
+      window.mafiaVoice.unlockAllAudio();
+      if (!window.mafiaVoice.isMicEnabled) {
+        window.mafiaVoice.enableMicrophone().then(granted => {
+          const promptBar = document.getElementById('micPromptBar');
+          if (promptBar && granted) promptBar.style.display = 'none';
+        });
+      }
+    }
+    if (window.mafiaAudio) {
+      window.mafiaAudio.init();
+    }
+  };
+
+  document.addEventListener('click', onUserInteract);
+  document.addEventListener('touchstart', onUserInteract, { passive: true });
+
+  const btnGrantMic = document.getElementById('btnGrantMic');
+  if (btnGrantMic) {
+    btnGrantMic.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.mafiaVoice) {
+        window.mafiaVoice.enableMicrophone().then(granted => {
+          const promptBar = document.getElementById('micPromptBar');
+          if (promptBar && granted) promptBar.style.display = 'none';
+        });
+      }
+    });
+  }
 
   const btnChangeNick = document.getElementById('btnChangeNick');
   if (btnChangeNick) {
@@ -173,28 +208,10 @@ function setupEventListeners() {
 
   const btnToggleMic = document.getElementById('btnToggleMic');
   if (btnToggleMic) {
-    btnToggleMic.addEventListener('click', async () => {
+    btnToggleMic.addEventListener('click', (e) => {
+      e.stopPropagation();
       if (window.mafiaVoice) {
-        if (!window.mafiaVoice.isMicEnabled) {
-          const success = await window.mafiaVoice.enableMicrophone();
-          if (success) {
-            btnToggleMic.textContent = '🎙️ Микрофон вкл';
-            btnToggleMic.className = 'btn btn-success';
-            btnToggleMic.style.width = 'auto';
-            if (currentGameState) {
-              window.mafiaVoice.syncPeers(currentGameState.slots, myUserId);
-              window.mafiaVoice.applyPhaseVoiceRules(currentGameState);
-            }
-          }
-        } else {
-          const track = window.mafiaVoice.localStream ? window.mafiaVoice.localStream.getAudioTracks()[0] : null;
-          if (track) {
-            track.enabled = !track.enabled;
-            btnToggleMic.textContent = track.enabled ? '🎙️ Микрофон вкл' : '🔇 Микрофон выкл';
-            btnToggleMic.className = track.enabled ? 'btn btn-success' : 'btn btn-danger';
-            btnToggleMic.style.width = 'auto';
-          }
-        }
+        window.mafiaVoice.toggleMic();
       }
     });
   }
@@ -202,9 +219,9 @@ function setupEventListeners() {
   const btnToggleMute = document.getElementById('btnToggleMute');
   if (btnToggleMute) {
     btnToggleMute.addEventListener('click', (e) => {
-      if (window.mafiaAudio) {
-        const isMuted = window.mafiaAudio.toggleMute();
-        e.target.textContent = isMuted ? '🔇 Звук выкл' : '🔊 Звук вкл';
+      e.stopPropagation();
+      if (window.mafiaVoice) {
+        window.mafiaVoice.toggleSound();
       }
     });
   }
@@ -352,11 +369,19 @@ function renderSeats(state) {
       }
     } else {
       if (state.phase === 2 && state.canSpeakNow && !isMe && slot.isAlive && !slot.isNominated) {
-        const btnNominate = document.createElement('button');
-        btnNominate.className = 'btn btn-danger';
-        btnNominate.textContent = 'Выставить на голосование';
-        btnNominate.onclick = () => nominatePlayer(slot.slotNumber);
-        actions.appendChild(btnNominate);
+        if (!state.hasNominatedThisTurn) {
+          const btnNominate = document.createElement('button');
+          btnNominate.className = 'btn btn-danger';
+          btnNominate.textContent = 'Выставить на голосование';
+          btnNominate.onclick = () => nominatePlayer(slot.slotNumber);
+          actions.appendChild(btnNominate);
+        } else {
+          const infoNom = document.createElement('div');
+          infoNom.style.fontSize = '0.75rem';
+          infoNom.style.color = 'var(--text-muted)';
+          infoNom.textContent = '✓ Выставили кандидата';
+          actions.appendChild(infoNom);
+        }
       }
 
       if (state.phase === 3 && state.canVoteNow && slot.isNominated) {
@@ -375,17 +400,24 @@ function renderSeats(state) {
           const btnShoot = document.createElement('button');
           btnShoot.className = isTarget ? 'btn btn-danger' : 'btn btn-danger';
           btnShoot.style.opacity = isTarget ? '1' : '0.85';
-          btnShoot.textContent = isTarget ? '🎯 Выбрана жертвой' : '🎯 Выстрелить';
+          btnShoot.textContent = isTarget ? '🎯 Жертва зафиксирована' : '🎯 Выстрелить';
           btnShoot.onclick = () => nightAction(slot.slotNumber);
           actions.appendChild(btnShoot);
         }
 
         if (state.canCheckNow) {
           const alreadyChecked = state.knownChecks && state.knownChecks[slot.slotNumber];
+          const hasCheckedThisNight = state.hasCheckedThisNight;
           const btnCheck = document.createElement('button');
           btnCheck.className = 'btn btn-primary';
-          btnCheck.disabled = !!alreadyChecked;
-          btnCheck.textContent = alreadyChecked ? '✓ Уже проверен' : '🔍 Проверить';
+          btnCheck.disabled = !!alreadyChecked || hasCheckedThisNight;
+          if (alreadyChecked) {
+            btnCheck.textContent = '✓ Уже проверен';
+          } else if (hasCheckedThisNight) {
+            btnCheck.textContent = '✓ Проверка исчерпана';
+          } else {
+            btnCheck.textContent = '🔍 Проверить';
+          }
           btnCheck.onclick = () => nightAction(slot.slotNumber);
           actions.appendChild(btnCheck);
         }
@@ -527,7 +559,7 @@ function showNightBanner(msg) {
     banner.classList.add('banner-black');
   } else if (msg.includes('КРАСНЫЙ')) {
     banner.classList.add('banner-red');
-  } else if (msg.includes('Жертва') || msg.includes('Выстрел') || msg.includes('отстрел')) {
+  } else if (msg.includes('Жертва') || msg.includes('Выстрел') || msg.includes('отстрел') || msg.includes('Стрельба') || msg.includes('разногласие')) {
     banner.classList.add('banner-kill');
   }
 

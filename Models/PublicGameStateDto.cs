@@ -36,6 +36,8 @@ public class PublicGameStateDto
     public bool CanVoteNow { get; set; }
     public bool CanShootNow { get; set; }
     public bool CanCheckNow { get; set; }
+    public bool HasNominatedThisTurn { get; set; }
+    public bool HasCheckedThisNight { get; set; }
     public string? SheriffLastCheckResult { get; set; }
     public string? DonLastCheckResult { get; set; }
     public Dictionary<int, string> KnownChecks { get; set; } = new();
