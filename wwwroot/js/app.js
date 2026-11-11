@@ -242,7 +242,7 @@ function updateUI(state) {
   renderHUD(state);
   renderLog(state.recentEvents);
 
-  if (window.mafiaVoice && window.mafiaVoice.isMicEnabled) {
+  if (window.mafiaVoice) {
     window.mafiaVoice.syncPeers(state.slots, myUserId);
     window.mafiaVoice.applyPhaseVoiceRules(state);
   }
