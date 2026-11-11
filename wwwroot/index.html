@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Мафия Онлайн</title>
+  <link rel="stylesheet" href="css/app.css?v=2">
+</head>
+<body>
+
+  <!-- Навигационная панель -->
+  <header class="navbar">
+    <div class="brand">
+      <span>🕵️ МАФИЯ ОНЛАЙН</span>
+      <span class="brand-badge">8 ИГРОКОВ</span>
+    </div>
+
+    <div class="nav-actions">
+      <button id="btnToggleMute" class="btn" style="width: auto; padding: 6px 12px;">🔊 Звук вкл</button>
+      <div class="user-profile">
+        <span class="status-indicator"></span>
+        <span id="nicknameDisplay">Загрузка...</span>
+        <button id="btnChangeNick" class="btn" style="width: auto; padding: 2px 8px; font-size: 0.75rem; background: #334155;">Сменить</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Основная игровая зона -->
+  <main class="game-container">
+    
+    <div class="table-area">
+      <!-- Баннер текущей фазы и таймер -->
+      <section class="phase-banner">
+        <div class="phase-info">
+          <h2 id="phaseTitle">Подключение к серверу...</h2>
+          <p id="phaseDescription">Подождите, идет синхронизация стола.</p>
+        </div>
+
+        <div class="timer-box">
+          <div class="timer-value" id="timerValue">0</div>
+          <div class="timer-label">СЕКУНД</div>
+        </div>
+      </section>
+
+      <!-- Стол на 8 игроков -->
+      <section class="seats-grid" id="seatsGrid">
+        <!-- Генерируется динамически через app.js -->
+      </section>
+
+      <!-- Нижняя панель действий (HUD) -->
+      <section class="hud-bar">
+        <div class="role-reveal-box" id="roleCard" style="display: none;">
+          <span style="color: var(--text-muted); font-size: 0.85rem;">Ваша роль:</span>
+          <div id="myRoleTitle" class="player-role-badge">Мирный житель</div>
+        </div>
+
+        <div class="hud-buttons" id="hudActions">
+          <!-- Динамические кнопки (Запустить игру, Завершить речь и т.д.) -->
+        </div>
+      </section>
+    </div>
+
+    <!-- Боковая панель событий (Лог стола) -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span>📜 ХРОНИКА ГОРОДА</span>
+      </div>
+      <div class="event-log" id="eventLog">
+        <!-- События игры -->
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- Модальное окно смены никнейма -->
+  <div class="modal-overlay" id="modalNickname" style="display: none;">
+    <div class="modal-card">
+      <h3>Ваш никнейм за столом</h3>
+      <input type="text" id="inputNickname" class="input-text" maxlength="20" placeholder="Введите имя..." />
+      <div style="display: flex; gap: 10px;">
+        <button id="btnSaveNick" class="btn btn-primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Скрипты -->
+  <script src="js/signalr.min.js"></script>
+  <script src="js/audio.js?v=2"></script>
+  <script src="js/app.js?v=2"></script>
+</body>
+</html>

@@ -1,0 +1,495 @@
+:root {
+  --bg-dark: #0f1117;
+  --bg-card: #181b24;
+  --bg-card-hover: #222634;
+  --table-bg: radial-gradient(ellipse at center, #1e293b 0%, #0f172a 70%);
+  --accent-red: #ef4444;
+  --accent-gold: #f59e0b;
+  --accent-blue: #3b82f6;
+  --accent-green: #10b981;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --border-color: #334155;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background-color: var(--bg-dark);
+  color: var(--text-main);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+}
+
+/* Верхняя панель */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 24px;
+  background: rgba(24, 27, 36, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.brand-badge {
+  background: var(--accent-red);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  background: #202533;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border-color);
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  display: inline-block;
+}
+
+/* Главная сцена игры */
+.game-container {
+  display: flex;
+  flex: 1;
+  padding: 16px;
+  gap: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (max-width: 960px) {
+  .game-container {
+    flex-direction: column;
+  }
+}
+
+.table-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Баннер текущей фазы и таймер */
+.phase-banner {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.phase-info h2 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--accent-gold);
+}
+
+.phase-info p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.timer-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 90px;
+}
+
+.timer-value {
+  font-size: 2.2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+}
+
+.timer-value.pulse-warning {
+  color: var(--accent-red);
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+.timer-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* Стол с 8 игроками */
+.seats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+@media (max-width: 768px) {
+  .seats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.seat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 140px;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.seat-card:hover {
+  border-color: #475569;
+  transform: translateY(-2px);
+}
+
+.seat-card.active-speaker {
+  border-color: var(--accent-gold);
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.35);
+  background: #23221b;
+}
+
+.seat-card.nominated {
+  border-color: var(--accent-red);
+}
+
+.seat-card.dead {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.seat-card.is-me {
+  border-color: var(--accent-blue);
+}
+
+.seat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.slot-badge {
+  background: #334155;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.speaker-badge {
+  background: var(--accent-gold);
+  color: #000;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.seat-player {
+  margin: 10px 0;
+}
+
+.player-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-role-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.role-mafia, .role-don {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.role-sheriff {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+}
+
+.role-peaceful {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.seat-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+/* Кнопки */
+.btn {
+  background: #334155;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.btn:hover:not(:disabled) {
+  background: #475569;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent-blue);
+}
+.btn-primary:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.btn-danger {
+  background: var(--accent-red);
+}
+.btn-danger:hover:not(:disabled) {
+  background: #dc2626;
+}
+
+.btn-success {
+  background: var(--accent-green);
+}
+.btn-success:hover:not(:disabled) {
+  background: #059669;
+}
+
+.btn-gold {
+  background: var(--accent-gold);
+  color: #000;
+}
+.btn-gold:hover:not(:disabled) {
+  background: #d97706;
+}
+
+/* Нижняя панель действий игрока (HUD) */
+.hud-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (max-width: 768px) {
+  .hud-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.role-reveal-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.role-card-mini {
+  background: #202533;
+  border: 1px solid var(--border-color);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.hud-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+/* Боковая панель событий (Лог) */
+.sidebar {
+  width: 320px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: calc(100vh - 120px);
+}
+
+@media (max-width: 960px) {
+  .sidebar {
+    width: 100%;
+    height: 250px;
+  }
+}
+
+.sidebar-header {
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid var(--border-color);
+  font-weight: 700;
+  font-size: 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.event-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.log-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 3px solid #64748b;
+  line-height: 1.4;
+}
+
+.log-item.alert {
+  border-left-color: var(--accent-gold);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.log-item.death {
+  border-left-color: var(--accent-red);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+}
+
+.log-item.night {
+  border-left-color: #818cf8;
+  background: rgba(129, 140, 248, 0.08);
+}
+
+.log-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: 2px;
+}
+
+/* Модальное окно смены ника */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 16px;
+}
+
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 24px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.input-text {
+  width: 100%;
+  background: #0f1117;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: #fff;
+  font-size: 1rem;
+  margin: 14px 0 20px 0;
+  outline: none;
+}
+
+.input-text:focus {
+  border-color: var(--accent-blue);
+}
