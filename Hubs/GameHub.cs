@@ -146,6 +146,18 @@ public class GameHub : Hub
         }
     }
 
+    public async Task Shout(string userId)
+    {
+        var res = _gameService.Shout(userId);
+        if (!res.Success)
+        {
+            await Clients.Caller.SendAsync("OnErrorNotification", res.Message);
+            return;
+        }
+
+        await BroadcastStateToAllAsync();
+    }
+
     public async Task ResetGame()
     {
         _gameService.ResetGame();

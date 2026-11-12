@@ -339,12 +339,28 @@ function renderSeats(state) {
       playerArea.appendChild(roleBadge);
     }
 
-    // Фолы и замечания
-    if (slot.isOccupied && slot.fouls > 0) {
+    // Фолы, выкрики и замечания
+    if (slot.isOccupied && (slot.fouls > 0 || slot.shoutsCount > 0 || slot.losesNextSpeech)) {
       const foulsBadge = document.createElement('div');
       foulsBadge.className = 'fouls-badge' + (slot.fouls >= 3 ? ' fouls-danger' : '');
-      foulsBadge.textContent = `⚠️ Фолы: ${slot.fouls}/4`;
+      let text = `⚠️ Фолы: ${slot.fouls}/4`;
+      if (slot.shoutsCount > 0) {
+        text += ` • Выкрики: ${slot.shoutsCount}/2`;
+      }
+      if (slot.losesNextSpeech) {
+        text += ` • 🔇 ЛИШЕН СЛОВА`;
+      }
+      foulsBadge.textContent = text;
       playerArea.appendChild(foulsBadge);
+    }
+
+    // Активный выкрик прямо сейчас
+    if (state.activeShoutSlotNumber === slot.slotNumber) {
+      card.classList.add('shouter-active');
+      const shoutBadge = document.createElement('div');
+      shoutBadge.className = 'shout-active-badge';
+      shoutBadge.textContent = `📢 ВЫКРИК (${state.activeShoutSecondsLeft}с)`;
+      playerArea.appendChild(shoutBadge);
     }
 
     // Проверка шерифа или дона
@@ -488,12 +504,61 @@ function renderHUD(state) {
     elHudActions.appendChild(btnStart);
   }
 
-  if (state.phase === 2 && state.canSpeakNow) {
-    const btnPass = document.createElement('button');
-    btnPass.className = 'btn btn-gold';
-    btnPass.textContent = '⏩ Завершить речь досрочно';
-    btnPass.onclick = () => passSpeech();
-    elHudActions.appendChild(btnPass);
+  if (state.phase === 2) {
+    const isSpeaker = state.mySlotNumber && (state.currentSpeakerSlot === state.mySlotNumber);
+    const mySlot = state.slots.find(s => s.slotNumber === state.mySlotNumber);
+    const isMeAlive = mySlot ? mySlot.isAlive : false;
+
+    if (isSpeaker) {
+      if (state.myLosesNextSpeech) {
+        const badgeSilenced = document.createElement('div');
+        badgeSilenced.className = 'btn btn-secondary';
+        badgeSilenced.style.cursor = 'default';
+        badgeSilenced.textContent = '🔇 Вы лишены слова за 3-й выкрик/фол!';
+        elHudActions.appendChild(badgeSilenced);
+      } else {
+        const btnPass = document.createElement('button');
+        btnPass.className = 'btn btn-gold';
+        btnPass.textContent = '⏩ Завершить речь досрочно';
+        btnPass.onclick = () => passSpeech();
+        elHudActions.appendChild(btnPass);
+      }
+    } else if (isMeAlive) {
+      // Механика выкрика за фол
+      if (state.activeShoutSlotNumber === state.mySlotNumber) {
+        const btnShouting = document.createElement('button');
+        btnShouting.className = 'btn btn-danger btn-shout-active';
+        btnShouting.textContent = `🎙️ ВЫКРИК АКТИВЕН (${state.activeShoutSecondsLeft}с): говорите!`;
+        btnShouting.disabled = true;
+        elHudActions.appendChild(btnShouting);
+      } else if (state.activeShoutSlotNumber) {
+        const btnOtherShout = document.createElement('button');
+        btnOtherShout.className = 'btn btn-secondary';
+        btnOtherShout.textContent = `📢 Игрок #${state.activeShoutSlotNumber} кричит (${state.activeShoutSecondsLeft}с)...`;
+        btnOtherShout.disabled = true;
+        elHudActions.appendChild(btnOtherShout);
+      } else if (state.myShoutsCount < 2) {
+        const btnShout = document.createElement('button');
+        btnShout.className = 'btn btn-shout';
+        btnShout.textContent = `📢 Взять выкрик (${state.myShoutsCount + 1}/2, +1 фол)`;
+        btnShout.title = 'Получить +1 фол и открыть микрофон столу на 6 секунд';
+        btnShout.onclick = () => shout();
+        elHudActions.appendChild(btnShout);
+      } else if (state.myShoutsCount === 2) {
+        const btnShout3 = document.createElement('button');
+        btnShout3.className = 'btn btn-danger';
+        btnShout3.textContent = `⚠️ 3-й выкрик (+1 фол, ЛИШЕНИЕ СЛОВА!)`;
+        btnShout3.title = '3-й выкрик лишает вас слова на следующий ход речи!';
+        btnShout3.onclick = () => shoutConfirm();
+        elHudActions.appendChild(btnShout3);
+      } else {
+        const btnDone = document.createElement('button');
+        btnDone.className = 'btn btn-secondary';
+        btnDone.textContent = `⛔ Выкрики исчерпаны (3/3)`;
+        btnDone.disabled = true;
+        elHudActions.appendChild(btnDone);
+      }
+    }
   }
 
   if (state.phase === 5) {
@@ -582,6 +647,18 @@ function addFoul(targetSlot) {
     if (confirm(`Выписать замечание (фол) Игроку #${targetSlot}?`)) {
       connection.invoke("AddFoul", targetSlot);
     }
+  }
+}
+
+function shout() {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    connection.invoke("Shout", myUserId);
+  }
+}
+
+function shoutConfirm() {
+  if (confirm("Внимание! Это ваш 3-й выкрик. Вы получите 3-й фол и будете ЛИШЕНЫ СЛОВА на следующий ход речи! Продолжить?")) {
+    shout();
   }
 }
 

@@ -566,21 +566,23 @@ class MafiaVoiceEngine {
         });
       }
     } else if (state.phase === 2) {
-      // 3. ДЕНЬ (Фаза 2): Говорит только активный живой спикер!
-      const isCurrentSpeaker = isMeAlive && (state.currentSpeakerSlot === state.mySlotNumber);
-      const canSpeak = isCurrentSpeaker && !this.userMutedMic;
+      // 3. ДЕНЬ (Фаза 2): Говорит назначенный спикер (если не лишен слова) ИЛИ игрок, взявший выкрик
+      const isCurrentSpeaker = isMeAlive && (state.currentSpeakerSlot === state.mySlotNumber) && !state.myLosesNextSpeech;
+      const isMeShouting = isMeAlive && (state.activeShoutSlotNumber === state.mySlotNumber);
+      const canSpeak = (isCurrentSpeaker || isMeShouting) && !this.userMutedMic;
       if (myTrack) myTrack.enabled = canSpeak;
 
       this.peers.forEach((peer, peerUserId) => {
         const peerSlot = state.slots.find(s => s.userId === peerUserId);
         const isPeerAlive = peerSlot ? peerSlot.isAlive : true;
-        const isPeerSpeaker = peerSlot ? (peerSlot.slotNumber === state.currentSpeakerSlot) : false;
+        const isPeerSpeaker = peerSlot ? (peerSlot.slotNumber === state.currentSpeakerSlot && !peerSlot.losesNextSpeech) : false;
+        const isPeerShouting = peerSlot ? (peerSlot.slotNumber === state.activeShoutSlotNumber) : false;
 
-        // Отправляем звук только если мы назначенный спикер
-        setAudioSenderActive(peer, isCurrentSpeaker);
+        // Отправляем звук если мы назначенный спикер или взяли выкрик
+        setAudioSenderActive(peer, isCurrentSpeaker || isMeShouting);
 
-        // Слушаем только живого спикера
-        setPeerPlayback(peer, isPeerAlive && isPeerSpeaker);
+        // Слушаем живого спикера и того, кто совершает выкрик
+        setPeerPlayback(peer, isPeerAlive && (isPeerSpeaker || isPeerShouting));
       });
     } else {
       // 4. Лобби (0), Голосование (3), Конец игры (5): свободный микрофон для всех ЖИВЫХ

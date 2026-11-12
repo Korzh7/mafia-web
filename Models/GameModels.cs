@@ -36,6 +36,8 @@ public class PlayerSlot
     public bool IsAlive { get; set; } = true;
     public PlayerRole Role { get; set; } = PlayerRole.Unknown;
     public int Fouls { get; set; } = 0;
+    public int ShoutsCount { get; set; } = 0;
+    public bool LosesNextSpeech { get; set; } = false;
     
     // Ночные действия
     public int? NightTargetSlot { get; set; }

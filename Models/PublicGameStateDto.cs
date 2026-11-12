@@ -11,6 +11,8 @@ public class PublicPlayerDto
     public bool IsCurrentSpeaker { get; set; }
     public bool IsNominated { get; set; }
     public int Fouls { get; set; }
+    public int ShoutsCount { get; set; }
+    public bool LosesNextSpeech { get; set; }
     public string? RoleTitle { get; set; } // Видно только если это твоя роль, напарник-маф или конец игры
     public string? RoleCode { get; set; }  // "peaceful", "mafia", "don", "sheriff", "hidden"
     public int? VotedForSlot { get; set; }
@@ -43,6 +45,10 @@ public class PublicGameStateDto
     public Dictionary<int, string> KnownChecks { get; set; } = new();
     public int? MyNightTargetSlot { get; set; }
     public int AliveMafiaCount { get; set; }
+    public int? ActiveShoutSlotNumber { get; set; }
+    public int ActiveShoutSecondsLeft { get; set; }
+    public int MyShoutsCount { get; set; }
+    public bool MyLosesNextSpeech { get; set; }
     
     public GameWinner Winner { get; set; }
 }
