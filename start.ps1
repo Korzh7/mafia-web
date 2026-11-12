@@ -12,7 +12,13 @@ Stop-Process -Name "MafiaWeb" -Force -ErrorAction SilentlyContinue
 # 1. Запуск .NET сервера
 Write-Host "`n[1/3] Запуск игрового сервера MafiaWeb..." -ForegroundColor Green
 
-$exePath = "$PSScriptRoot\bin\Release\net10.0\MafiaWeb.exe"
+$exePath = "$PSScriptRoot\bin\Release\net8.0\MafiaWeb.exe"
+if (-not (Test-Path $exePath)) {
+    $exePath = "$PSScriptRoot\bin\Release\net10.0\MafiaWeb.exe"
+}
+if (-not (Test-Path $exePath)) {
+    $exePath = "$PSScriptRoot\bin\Debug\net8.0\MafiaWeb.exe"
+}
 if (-not (Test-Path $exePath)) {
     $exePath = "$PSScriptRoot\bin\Debug\net10.0\MafiaWeb.exe"
 }
