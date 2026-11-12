@@ -31,13 +31,49 @@ public class GameRoomService
     private int? _activeShoutSlotNumber = null;
     private int _activeShoutSecondsLeft = 0;
 
+    public int MaxSlots { get; private set; } = 10;
+
     public GameRoomService()
     {
-        for (int i = 1; i <= 8; i++)
+        for (int i = 1; i <= MaxSlots; i++)
         {
             _slots.Add(new PlayerSlot { SlotNumber = i });
         }
-        AddEvent("Комната создана. Займите свои места за столом (1-8).", "info");
+        AddEvent($"Комната создана. Выберите количество мест (5-12) и займите свои места за столом (1-{MaxSlots}).", "info");
+    }
+
+    public (bool Success, string Message) SetTableSize(int newSize)
+    {
+        lock (_lock)
+        {
+            if (Phase != GamePhase.Lobby)
+                return (false, "Количество мест за столом можно менять только в лобби до старта игры.");
+
+            if (newSize < 5 || newSize > 12)
+                return (false, "Размер стола должен быть от 5 до 12 игроков.");
+
+            var occupiedBeyond = _slots.Where(s => s.SlotNumber > newSize && !string.IsNullOrEmpty(s.UserId)).ToList();
+            if (occupiedBeyond.Count > 0)
+            {
+                var names = string.Join(", ", occupiedBeyond.Select(s => $"#{s.SlotNumber} ({s.Nickname})"));
+                return (false, $"Нельзя уменьшить стол до {newSize} мест: слоты заняты игроками: {names}. Сначала освободите эти места.");
+            }
+
+            MaxSlots = newSize;
+
+            while (_slots.Count < newSize)
+            {
+                _slots.Add(new PlayerSlot { SlotNumber = _slots.Count + 1 });
+            }
+
+            while (_slots.Count > newSize)
+            {
+                _slots.RemoveAt(_slots.Count - 1);
+            }
+
+            AddEvent($"Размер стола изменен на {newSize} мест.", "info");
+            return (true, $"Установлен стол на {newSize} игроков.");
+        }
     }
 
     public IReadOnlyList<PlayerSlot> GetSlots()
@@ -130,7 +166,7 @@ public class GameRoomService
             if (Phase != GamePhase.Lobby)
                 return (false, "Игра уже началась. Занять место нельзя.");
 
-            if (slotNumber < 1 || slotNumber > 8)
+            if (slotNumber < 1 || slotNumber > _slots.Count)
                 return (false, "Неверный номер слота.");
 
             var slot = _slots[slotNumber - 1];
@@ -254,23 +290,39 @@ public class GameRoomService
         }
 
         int count = players.Count;
-        if (count >= 7)
+        if (count >= 12)
         {
-            // 8 игроков (или 7): 1 Дон, 1 Мафия, 1 Шериф, остальные Мирные
+            // 12 игроков: 1 Дон, 3 Мафии, 1 Шериф, 7 Мирных (4 черных vs 8 красных)
+            shuffled[0].Role = PlayerRole.Don;
+            shuffled[1].Role = PlayerRole.Mafia;
+            shuffled[2].Role = PlayerRole.Mafia;
+            shuffled[3].Role = PlayerRole.Mafia;
+            shuffled[4].Role = PlayerRole.Sheriff;
+        }
+        else if (count >= 9)
+        {
+            // 9-11 игроков (включая классику на 10 чел): 1 Дон, 2 Мафии, 1 Шериф, остальные Мирные (3 черных)
+            shuffled[0].Role = PlayerRole.Don;
+            shuffled[1].Role = PlayerRole.Mafia;
+            shuffled[2].Role = PlayerRole.Mafia;
+            shuffled[3].Role = PlayerRole.Sheriff;
+        }
+        else if (count >= 7)
+        {
+            // 7-8 игроков: 1 Дон, 1 Мафия, 1 Шериф, остальные Мирные (2 черных)
             shuffled[0].Role = PlayerRole.Don;
             shuffled[1].Role = PlayerRole.Mafia;
             shuffled[2].Role = PlayerRole.Sheriff;
-            // 3..7 мирные
         }
         else if (count >= 5)
         {
-            // 5-6 игроков: 1 Дон (он же мафия), 1 Шериф, остальные мирные
+            // 5-6 игроков: 1 Дон (он же стреляющая мафия), 1 Шериф, остальные Мирные (1 черный)
             shuffled[0].Role = PlayerRole.Don;
             shuffled[1].Role = PlayerRole.Sheriff;
         }
         else
         {
-            // 4 игрока: 1 Мафия, 1 Шериф, 2 мирных
+            // 4 игрока: 1 Мафия, 1 Шериф, 2 Мирных
             shuffled[0].Role = PlayerRole.Mafia;
             shuffled[1].Role = PlayerRole.Sheriff;
         }
@@ -293,7 +345,7 @@ public class GameRoomService
             if (_speakerNominatedThisTurn)
                 return (false, "Вы уже выставили одного игрока в эту минуту! По правилам Мафии за свою речь можно выставить только одного кандидата.");
 
-            if (targetSlotNumber < 1 || targetSlotNumber > 8)
+            if (targetSlotNumber < 1 || targetSlotNumber > _slots.Count)
                 return (false, "Неверный номер игрока.");
 
             var target = _slots[targetSlotNumber - 1];
@@ -357,7 +409,7 @@ public class GameRoomService
             if (actor == null || !actor.IsAlive)
                 return (false, "Вы мертвы.");
 
-            if (targetSlotNumber < 1 || targetSlotNumber > 8)
+            if (targetSlotNumber < 1 || targetSlotNumber > _slots.Count)
                 return (false, "Неверный слот.");
 
             var target = _slots[targetSlotNumber - 1];
@@ -373,21 +425,23 @@ public class GameRoomService
                     return (true, $"Жертва зафиксирована: Игрок #{targetSlotNumber} ({target.Nickname}). Он будет убит утром!");
                 }
 
-                var partner = aliveMafia.FirstOrDefault(m => m.UserId != actor.UserId);
-                if (partner != null && partner.NightTargetSlot.HasValue)
+                int chosenCount = aliveMafia.Count(m => m.NightTargetSlot.HasValue);
+                var distinctTargets = aliveMafia.Where(m => m.NightTargetSlot.HasValue).Select(m => m.NightTargetSlot!.Value).Distinct().ToList();
+
+                if (chosenCount == aliveMafia.Count)
                 {
-                    if (partner.NightTargetSlot.Value == targetSlotNumber)
+                    if (distinctTargets.Count == 1)
                     {
-                        return (true, $"Стрельба согласована! Жертва клана: Игрок #{targetSlotNumber} ({target.Nickname}). Он будет убит утром!");
+                        return (true, $"Стрельба клана согласована единогласно! Жертва: Игрок #{targetSlotNumber} ({target.Nickname}). Он будет убит утром!");
                     }
                     else
                     {
-                        var partnerTarget = _slots[partner.NightTargetSlot.Value - 1];
-                        return (true, $"Внимание: разногласие! Вы выбрали #{targetSlotNumber} ({target.Nickname}), а напарник выбрал #{partner.NightTargetSlot.Value} ({partnerTarget.Nickname}). Договоритесь до конца ночи!");
+                        var targetsList = string.Join(", ", distinctTargets.Select(t => $"#{t} ({_slots[t - 1].Nickname})"));
+                        return (true, $"Внимание: разногласие клана! Выбраны разные цели: {targetsList}. Договоритесь до конца ночи, иначе будет промах!");
                     }
                 }
 
-                return (true, $"Выстрел направлен в Игрока #{targetSlotNumber} ({target.Nickname}). Ожидаем выбор напарника...");
+                return (true, $"Выстрел направлен в Игрока #{targetSlotNumber} ({target.Nickname}). Проголосовали {chosenCount} из {aliveMafia.Count} членов мафии...");
             }
 
             if (actor.Role == PlayerRole.Sheriff)
@@ -420,7 +474,7 @@ public class GameRoomService
             if (_donCheckedSlotThisNight.HasValue)
                 return (false, "Дон уже совершил проверку этой ночью! За одну ночь можно проверить только одного игрока.");
 
-            if (targetSlotNumber < 1 || targetSlotNumber > 8)
+            if (targetSlotNumber < 1 || targetSlotNumber > _slots.Count)
                 return (false, "Неверный слот.");
 
             var target = _slots[targetSlotNumber - 1];
@@ -442,7 +496,7 @@ public class GameRoomService
             if (Phase is GamePhase.Lobby or GamePhase.GameOver)
                 return (false, "Фолы фиксируются во время партии.");
 
-            if (targetSlotNumber < 1 || targetSlotNumber > 8)
+            if (targetSlotNumber < 1 || targetSlotNumber > _slots.Count)
                 return (false, "Неверный номер игрока.");
 
             var target = _slots[targetSlotNumber - 1];
@@ -967,6 +1021,7 @@ public class GameRoomService
                               (mySlot?.Role == PlayerRole.Don) ? new Dictionary<int, string>(_donChecks) : new(),
                 MyNightTargetSlot = mySlot?.NightTargetSlot,
                 AliveMafiaCount = aliveMafiaCount,
+                MaxSlots = MaxSlots,
                 ActiveShoutSlotNumber = _activeShoutSlotNumber,
                 ActiveShoutSecondsLeft = _activeShoutSecondsLeft,
                 MyShoutsCount = mySlot?.ShoutsCount ?? 0,

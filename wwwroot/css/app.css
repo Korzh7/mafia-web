@@ -165,16 +165,75 @@ body {
   text-transform: uppercase;
 }
 
-/* Стол с 8 игроками */
+/* Настройки лобби */
+.lobby-settings-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: var(--shadow);
+}
+
+.lobby-size-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.lobby-size-control label {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.table-size-select {
+  background: #1e293b;
+  color: #fff;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 1;
+  max-width: 520px;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.table-size-select:focus, .table-size-select:hover {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
+}
+
+/* Стол игроков (адаптивная сетка на 5-12 мест) */
 .seats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 14px;
 }
 
 @media (max-width: 768px) {
   .seats-grid {
     grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .lobby-size-control {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .table-size-select {
+    width: 100%;
+    max-width: 100%;
   }
 }
 

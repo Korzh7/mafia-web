@@ -45,6 +45,7 @@ public class PublicGameStateDto
     public Dictionary<int, string> KnownChecks { get; set; } = new();
     public int? MyNightTargetSlot { get; set; }
     public int AliveMafiaCount { get; set; }
+    public int MaxSlots { get; set; } = 10;
     public int? ActiveShoutSlotNumber { get; set; }
     public int ActiveShoutSecondsLeft { get; set; }
     public int MyShoutsCount { get; set; }

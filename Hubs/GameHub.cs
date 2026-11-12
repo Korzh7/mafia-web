@@ -158,6 +158,18 @@ public class GameHub : Hub
         await BroadcastStateToAllAsync();
     }
 
+    public async Task SetTableSize(int size)
+    {
+        var res = _gameService.SetTableSize(size);
+        if (!res.Success)
+        {
+            await Clients.Caller.SendAsync("OnErrorNotification", res.Message);
+            return;
+        }
+
+        await BroadcastStateToAllAsync();
+    }
+
     public async Task ResetGame()
     {
         _gameService.ResetGame();

@@ -23,6 +23,8 @@ let elRoleCard = null;
 let elHudActions = null;
 let elModalNickname = null;
 let elInputNickname = null;
+let elLobbySettingsBar = null;
+let elTableSizeSelect = null;
 
 // Инициализация приложения
 function init() {
@@ -39,6 +41,17 @@ function init() {
   elHudActions = document.getElementById('hudActions');
   elModalNickname = document.getElementById('modalNickname');
   elInputNickname = document.getElementById('inputNickname');
+  elLobbySettingsBar = document.getElementById('lobbySettingsBar');
+  elTableSizeSelect = document.getElementById('tableSizeSelect');
+
+  if (elTableSizeSelect) {
+    elTableSizeSelect.addEventListener('change', (e) => {
+      const newSize = parseInt(e.target.value, 10);
+      if (newSize >= 5 && newSize <= 12) {
+        setTableSize(newSize);
+      }
+    });
+  }
 
   if (elNicknameDisplay) elNicknameDisplay.textContent = myNickname;
   if (elInputNickname) elInputNickname.value = myNickname;
@@ -51,7 +64,7 @@ function init() {
     });
   }
 
-  // Предварительная отрисовка 8 пустых мест, чтобы экран не был черным
+  // Предварительная отрисовка пустых мест (10 по умолчанию), чтобы экран не был черным
   renderInitialSeats();
 
   setupEventListeners();
@@ -61,7 +74,7 @@ function init() {
 function renderInitialSeats() {
   if (!elSeatsGrid) return;
   elSeatsGrid.innerHTML = '';
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= 10; i++) {
     const card = document.createElement('div');
     card.className = 'seat-card';
     card.innerHTML = `
@@ -268,6 +281,16 @@ function updateUI(state) {
   if (elPhaseTitle) elPhaseTitle.textContent = state.phaseTitle;
   if (elPhaseDescription) elPhaseDescription.textContent = state.phaseDescription + aliveInfo;
   if (elTimerValue) elTimerValue.textContent = state.secondsLeft;
+
+  if (elLobbySettingsBar) {
+    elLobbySettingsBar.style.display = (state.phase === 0) ? 'flex' : 'none';
+  }
+  if (elTableSizeSelect && state.phase === 0) {
+    const curSize = state.maxSlots || state.slots.length;
+    if (parseInt(elTableSizeSelect.value, 10) !== curSize) {
+      elTableSizeSelect.value = curSize;
+    }
+  }
 
   renderSeats(state);
   renderHUD(state);
@@ -659,6 +682,12 @@ function shout() {
 function shoutConfirm() {
   if (confirm("Внимание! Это ваш 3-й выкрик. Вы получите 3-й фол и будете ЛИШЕНЫ СЛОВА на следующий ход речи! Продолжить?")) {
     shout();
+  }
+}
+
+function setTableSize(size) {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    connection.invoke("SetTableSize", size);
   }
 }
 
