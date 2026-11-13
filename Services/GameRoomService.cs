@@ -33,6 +33,8 @@ public class GameRoomService
     private int _activeShoutSecondsLeft = 0;
 
     public int MaxSlots { get; private set; } = 10;
+    public RoomMode Mode { get; private set; } = RoomMode.Standard;
+    public string RoomConfigCode { get; private set; } = "10";
 
     public GameRoomService()
     {
@@ -40,41 +42,74 @@ public class GameRoomService
         {
             _slots.Add(new PlayerSlot { SlotNumber = i });
         }
-        AddEvent($"Комната создана. Выберите количество мест (4-12) и займите свои места за столом (1-{MaxSlots}).", "info");
+        AddEvent($"Комната создана. Выберите режим или количество мест (2-12) и займите свои места за столом (1-{MaxSlots}).", "info");
     }
 
-    public (bool Success, string Message) SetTableSize(int newSize)
+    public (bool Success, string Message) ConfigureTable(string configCode)
     {
         lock (_lock)
         {
             if (Phase != GamePhase.Lobby)
-                return (false, "Количество мест за столом можно менять только в лобби до старта игры.");
+                return (false, "Конфигурацию стола можно менять только в лобби до старта игры.");
 
-            if (newSize < 4 || newSize > 12)
-                return (false, "Размер стола должен быть от 4 до 12 игроков.");
+            RoomMode newMode;
+            int targetSlots;
 
-            var occupiedBeyond = _slots.Where(s => s.SlotNumber > newSize && !string.IsNullOrEmpty(s.UserId)).ToList();
+            switch (configCode)
+            {
+                case "2_peaceful":
+                    newMode = RoomMode.TestTwoPeacefuls;
+                    targetSlots = 2;
+                    break;
+                case "2_mafia":
+                    newMode = RoomMode.TestTwoMafia;
+                    targetSlots = 2;
+                    break;
+                default:
+                    if (!int.TryParse(configCode, out targetSlots) || targetSlots < 4 || targetSlots > 12)
+                    {
+                        return (false, "Размер стола должен быть от 4 до 12 игроков.");
+                    }
+                    newMode = RoomMode.Standard;
+                    break;
+            }
+
+            var occupiedBeyond = _slots.Where(s => s.SlotNumber > targetSlots && !string.IsNullOrEmpty(s.UserId)).ToList();
             if (occupiedBeyond.Count > 0)
             {
                 var names = string.Join(", ", occupiedBeyond.Select(s => $"#{s.SlotNumber} ({s.Nickname})"));
-                return (false, $"Нельзя уменьшить стол до {newSize} мест: слоты заняты игроками: {names}. Сначала освободите эти места.");
+                return (false, $"Нельзя уменьшить стол до {targetSlots} мест: слоты заняты игроками: {names}. Сначала освободите эти места.");
             }
 
-            MaxSlots = newSize;
+            Mode = newMode;
+            RoomConfigCode = configCode;
+            MaxSlots = targetSlots;
 
-            while (_slots.Count < newSize)
+            while (_slots.Count < targetSlots)
             {
                 _slots.Add(new PlayerSlot { SlotNumber = _slots.Count + 1 });
             }
 
-            while (_slots.Count > newSize)
+            while (_slots.Count > targetSlots)
             {
                 _slots.RemoveAt(_slots.Count - 1);
             }
 
-            AddEvent($"Размер стола изменен на {newSize} мест.", "info");
-            return (true, $"Установлен стол на {newSize} игроков.");
+            string modeDesc = newMode switch
+            {
+                RoomMode.TestTwoPeacefuls => "ТЕСТ: 2 Мирных жителя (проверка дневного микрофона)",
+                RoomMode.TestTwoMafia => "ТЕСТ: 2 Мафии (проверка ночной договорки)",
+                _ => $"{targetSlots} мест"
+            };
+
+            AddEvent($"Конфигурация стола изменена: {modeDesc}.", "info");
+            return (true, $"Установлена конфигурация: {modeDesc}.");
         }
+    }
+
+    public (bool Success, string Message) SetTableSize(int newSize)
+    {
+        return ConfigureTable(newSize.ToString());
     }
 
     public IReadOnlyList<PlayerSlot> GetSlots()
@@ -250,14 +285,12 @@ public class GameRoomService
                 return (false, "Игра уже идет.");
 
             var occupied = _slots.Where(s => !string.IsNullOrEmpty(s.UserId)).ToList();
-            if (occupied.Count < 4)
-                return (false, "Для игры нужно хотя бы 4 игрока (рекомендуется 8).");
+            int requiredPlayers = (Mode is RoomMode.TestTwoPeacefuls or RoomMode.TestTwoMafia) ? 2 : 4;
+            if (occupied.Count < requiredPlayers)
+                return (false, $"Для запуска нужно хотя бы {requiredPlayers} игрока (сейчас занято {occupied.Count}).");
 
             DistributeRoles(occupied);
 
-            Phase = GamePhase.NightZero;
-            DayNumber = 0;
-            SecondsLeft = 60; // 60 секунд на договорку мафии
             _nominatedSlots.Clear();
             _sheriffChecks.Clear();
             _donChecks.Clear();
@@ -269,7 +302,31 @@ public class GameRoomService
             _activeShoutSecondsLeft = 0;
             Winner = GameWinner.None;
 
-            AddEvent("Игра началась! Наступает Нулевая ночь — договорка мафии.", "night");
+            if (Mode == RoomMode.TestTwoPeacefuls)
+            {
+                Phase = GamePhase.DayDiscussion;
+                DayNumber = 1;
+                CurrentSpeakerSlot = occupied[0].SlotNumber;
+                SecondsLeft = 60;
+                AddEvent($"Тестовая игра (2 Мирных) запущена! Проверка дневного звука. Говорит Игрок #{CurrentSpeakerSlot.Value} ({occupied[0].Nickname}).", "day");
+            }
+            else if (Mode == RoomMode.TestTwoMafia)
+            {
+                Phase = GamePhase.NightZero;
+                DayNumber = 0;
+                CurrentSpeakerSlot = null;
+                SecondsLeft = 60;
+                AddEvent("Тестовая игра (2 Мафии) запущена! Наступает Нулевая ночь — мафия говорит друг с другом в закрытом канале.", "night");
+            }
+            else
+            {
+                Phase = GamePhase.NightZero;
+                DayNumber = 0;
+                CurrentSpeakerSlot = null;
+                SecondsLeft = 60;
+                AddEvent("Игра началась! Наступает Нулевая ночь — договорка мафии.", "night");
+            }
+
             return (true, "Игра запущена.");
         }
     }
@@ -289,6 +346,22 @@ public class GameRoomService
             s.Fouls = 0;
             s.ShoutsCount = 0;
             s.LosesNextSpeech = false;
+        }
+
+        if (Mode == RoomMode.TestTwoPeacefuls)
+        {
+            foreach (var s in players)
+            {
+                s.Role = PlayerRole.Peaceful;
+            }
+            return;
+        }
+
+        if (Mode == RoomMode.TestTwoMafia)
+        {
+            shuffled[0].Role = PlayerRole.Don;
+            shuffled[1].Role = PlayerRole.Mafia;
+            return;
         }
 
         int count = players.Count;
@@ -885,6 +958,13 @@ public class GameRoomService
 
     private bool CheckGameOver()
     {
+        // В тестовых режимах на 2 игрока игра не завершается автоматически по паритету,
+        // чтобы дать возможность протестировать звук и действия столько, сколько нужно
+        if (Mode is RoomMode.TestTwoPeacefuls or RoomMode.TestTwoMafia)
+        {
+            return false;
+        }
+
         var alive = _slots.Where(s => s.IsAlive && !string.IsNullOrEmpty(s.UserId)).ToList();
         int mafiaCount = alive.Count(s => s.Role is PlayerRole.Mafia or PlayerRole.Don);
         int peacefulCount = alive.Count - mafiaCount;
@@ -1087,6 +1167,7 @@ public class GameRoomService
                 MyNightTargetSlot = mySlot?.NightTargetSlot,
                 AliveMafiaCount = aliveMafiaCount,
                 MaxSlots = MaxSlots,
+                RoomConfigCode = RoomConfigCode,
                 ActiveShoutSlotNumber = _activeShoutSlotNumber,
                 ActiveShoutSecondsLeft = _activeShoutSecondsLeft,
                 MyShoutsCount = mySlot?.ShoutsCount ?? 0,

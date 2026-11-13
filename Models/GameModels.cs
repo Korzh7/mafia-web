@@ -26,6 +26,13 @@ public enum GameWinner
     Mafia
 }
 
+public enum RoomMode
+{
+    Standard = 0,
+    TestTwoPeacefuls = 1,
+    TestTwoMafia = 2
+}
+
 public class PlayerSlot
 {
     public int SlotNumber { get; set; } // 1..12

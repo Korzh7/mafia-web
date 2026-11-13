@@ -46,10 +46,8 @@ function init() {
 
   if (elTableSizeSelect) {
     elTableSizeSelect.addEventListener('change', (e) => {
-      const newSize = parseInt(e.target.value, 10);
-      if (newSize >= 5 && newSize <= 12) {
-        setTableSize(newSize);
-      }
+      const configCode = e.target.value;
+      setTableSize(configCode);
     });
   }
 
@@ -300,15 +298,23 @@ function updateUI(state) {
     elLobbySettingsBar.style.display = (state.phase === 0) ? 'flex' : 'none';
   }
   if (elTableSizeSelect && state.phase === 0) {
-    const curSize = state.maxSlots || state.slots.length;
-    if (parseInt(elTableSizeSelect.value, 10) !== curSize) {
-      elTableSizeSelect.value = curSize;
+    const curConfig = state.roomConfigCode || (state.maxSlots || state.slots.length).toString();
+    if (elTableSizeSelect.value !== curConfig) {
+      elTableSizeSelect.value = curConfig;
     }
   }
 
   // Динамический бейдж размера стола в шапке
   const brandBadge = document.getElementById('brandBadge');
-  if (brandBadge) brandBadge.textContent = `${state.maxSlots || state.slots.length} МЕСТ`;
+  if (brandBadge) {
+    if (state.roomConfigCode === '2_peaceful') {
+      brandBadge.textContent = 'ТЕСТ: 2 МИРНЫХ';
+    } else if (state.roomConfigCode === '2_mafia') {
+      brandBadge.textContent = 'ТЕСТ: 2 МАФИИ';
+    } else {
+      brandBadge.textContent = `${state.maxSlots || state.slots.length} МЕСТ`;
+    }
+  }
 
   renderSeats(state);
   renderHUD(state);
@@ -710,9 +716,9 @@ function shoutConfirm() {
   }
 }
 
-function setTableSize(size) {
+function setTableSize(sizeOrCode) {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
-    connection.invoke("SetTableSize", size);
+    connection.invoke("ConfigureTable", sizeOrCode.toString());
   }
 }
 

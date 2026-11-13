@@ -158,9 +158,9 @@ public class GameHub : Hub
         await BroadcastStateToAllAsync();
     }
 
-    public async Task SetTableSize(int size)
+    public async Task ConfigureTable(string configCode)
     {
-        var res = _gameService.SetTableSize(size);
+        var res = _gameService.ConfigureTable(configCode);
         if (!res.Success)
         {
             await Clients.Caller.SendAsync("OnErrorNotification", res.Message);
@@ -168,6 +168,11 @@ public class GameHub : Hub
         }
 
         await BroadcastStateToAllAsync();
+    }
+
+    public async Task SetTableSize(int size)
+    {
+        await ConfigureTable(size.ToString());
     }
 
     public async Task ResetGame()

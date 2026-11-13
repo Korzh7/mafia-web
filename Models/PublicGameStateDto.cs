@@ -46,6 +46,7 @@ public class PublicGameStateDto
     public int? MyNightTargetSlot { get; set; }
     public int AliveMafiaCount { get; set; }
     public int MaxSlots { get; set; } = 10;
+    public string RoomConfigCode { get; set; } = "10";
     public int? ActiveShoutSlotNumber { get; set; }
     public int ActiveShoutSecondsLeft { get; set; }
     public int MyShoutsCount { get; set; }
