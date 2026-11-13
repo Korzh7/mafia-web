@@ -40,7 +40,7 @@ public class GameRoomService
         {
             _slots.Add(new PlayerSlot { SlotNumber = i });
         }
-        AddEvent($"Комната создана. Выберите количество мест (5-12) и займите свои места за столом (1-{MaxSlots}).", "info");
+        AddEvent($"Комната создана. Выберите количество мест (4-12) и займите свои места за столом (1-{MaxSlots}).", "info");
     }
 
     public (bool Success, string Message) SetTableSize(int newSize)
@@ -50,8 +50,8 @@ public class GameRoomService
             if (Phase != GamePhase.Lobby)
                 return (false, "Количество мест за столом можно менять только в лобби до старта игры.");
 
-            if (newSize < 5 || newSize > 12)
-                return (false, "Размер стола должен быть от 5 до 12 игроков.");
+            if (newSize < 4 || newSize > 12)
+                return (false, "Размер стола должен быть от 4 до 12 игроков.");
 
             var occupiedBeyond = _slots.Where(s => s.SlotNumber > newSize && !string.IsNullOrEmpty(s.UserId)).ToList();
             if (occupiedBeyond.Count > 0)
@@ -324,9 +324,16 @@ public class GameRoomService
         }
         else
         {
-            // 4 игрока: 1 Мафия, 1 Шериф, 2 Мирных
-            shuffled[0].Role = PlayerRole.Mafia;
-            shuffled[1].Role = PlayerRole.Sheriff;
+            // 4 игрока (Тестовый сценарий связи: 2 Мафии vs 2 Красных):
+            // 1 Дон, 1 Мафия, 1 Шериф, 1 Мирный житель.
+            // Позволяет проверить:
+            // 1) Дневной звук каждого игрока в свою минуту речи.
+            // 2) Ночной закрытый аудиочат мафии (слышат только друг друга).
+            // 3) Ночную стрельбу мафии с проверкой согласия.
+            // 4) Ночные проверки Шерифа и Дона.
+            shuffled[0].Role = PlayerRole.Don;
+            shuffled[1].Role = PlayerRole.Mafia;
+            shuffled[2].Role = PlayerRole.Sheriff;
         }
     }
 
@@ -888,9 +895,19 @@ public class GameRoomService
             return true;
         }
 
-        if (mafiaCount >= peacefulCount)
+        // В тестовом сценарии на 4 игрока (2 мафии vs 2 мирных) игра стартует при счете 2:2.
+        // Мафия побеждает при получении перевеса (2 vs 1 или 1 vs 0), а не сразу на старте.
+        // При стандартных столах (5+ игроков) действует классическое правило паритета (mafiaCount >= peacefulCount).
+        int totalOccupied = _slots.Count(s => !string.IsNullOrEmpty(s.UserId));
+        bool isSmallTestGame = totalOccupied <= 4;
+
+        bool mafiaWon = isSmallTestGame
+            ? (mafiaCount > peacefulCount || peacefulCount == 0)
+            : (mafiaCount >= peacefulCount);
+
+        if (mafiaWon)
         {
-            EndGame(GameWinner.Mafia, "Мафия сравнялась по численности с мирными жителями. Победа мафии!");
+            EndGame(GameWinner.Mafia, "Мафия победила город!");
             return true;
         }
 

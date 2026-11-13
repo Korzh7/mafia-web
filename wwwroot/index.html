@@ -49,11 +49,12 @@
         </div>
       </section>
 
-      <!-- Настройки стола в лобби (выбор от 5 до 12 игроков) -->
+      <!-- Настройки стола в лобби (выбор от 4 до 12 игроков) -->
       <section class="lobby-settings-bar" id="lobbySettingsBar" style="display: none;">
         <div class="lobby-size-control">
           <label for="tableSizeSelect">👥 Мест за столом:</label>
           <select id="tableSizeSelect" class="table-size-select">
+            <option value="4">4 игрока ⚡ ТЕСТ (2 Мафии, 1 Шериф, 1 Мирный)</option>
             <option value="5">5 игроков (1 Мафия/Дон, 1 Шериф, 3 Мирных)</option>
             <option value="6">6 игроков (1 Мафия/Дон, 1 Шериф, 4 Мирных)</option>
             <option value="7">7 игроков (2 Мафии, 1 Шериф, 4 Мирных)</option>
@@ -66,7 +67,7 @@
         </div>
       </section>
 
-      <!-- Игровой стол (5-12 мест) -->
+      <!-- Игровой стол (4-12 мест) -->
       <section class="seats-grid" id="seatsGrid">
         <!-- Генерируется динамически через app.js -->
       </section>
@@ -109,8 +110,8 @@
 
   <!-- Скрипты -->
   <script src="js/signalr.min.js"></script>
-  <script src="js/audio.js?v=12"></script>
-  <script src="js/voice.js?v=12"></script>
-  <script src="js/app.js?v=12"></script>
+  <script src="js/audio.js?v=13"></script>
+  <script src="js/voice.js?v=13"></script>
+  <script src="js/app.js?v=13"></script>
 </body>
 </html>
