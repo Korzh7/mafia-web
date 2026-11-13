@@ -231,6 +231,16 @@ function setupEventListeners() {
     });
   }
 
+  const btnEchoTest = document.getElementById('btnEchoTest');
+  if (btnEchoTest) {
+    btnEchoTest.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.mafiaVoice) {
+        window.mafiaVoice.startEchoTest();
+      }
+    });
+  }
+
   const btnToggleMic = document.getElementById('btnToggleMic');
   if (btnToggleMic) {
     btnToggleMic.addEventListener('click', (e) => {
@@ -255,6 +265,7 @@ function setupEventListeners() {
 function updateTimer(seconds) {
   if (!currentGameState) return;
   currentGameState.secondsLeft = seconds;
+  window.currentGameState = currentGameState;
   if (elTimerValue) elTimerValue.textContent = seconds;
 
   if (seconds <= 5 && seconds > 0) {
@@ -269,6 +280,7 @@ function updateUI(state) {
   const prevPhase = currentGameState ? currentGameState.phase : null;
   const prevDeadCount = currentGameState ? currentGameState.slots.filter(s => s.isOccupied && !s.isAlive).length : 0;
   currentGameState = state;
+  window.currentGameState = state;
   const currentDeadCount = state.slots.filter(s => s.isOccupied && !s.isAlive).length;
 
   if (prevPhase !== state.phase) {
@@ -333,7 +345,12 @@ function renderSeats(state) {
   state.slots.forEach(slot => {
     const card = document.createElement('div');
     card.className = 'seat-card';
-    if (slot.userId) card.setAttribute('data-user-id', slot.userId);
+    if (slot.userId) {
+      card.setAttribute('data-user-id', slot.userId);
+      if (window.mafiaVoice && window.mafiaVoice.activeSpeakers && window.mafiaVoice.activeSpeakers.has(slot.userId)) {
+        card.classList.add('speaking');
+      }
+    }
 
     const isMe = state.mySlotNumber === slot.slotNumber;
     if (isMe) card.classList.add('is-me');
@@ -378,6 +395,26 @@ function renderSeats(state) {
     name.textContent = slot.isOccupied ? slot.nickname : 'Свободно';
     if (isMe) name.textContent += ' (Вы)';
     playerArea.appendChild(name);
+
+    // Индикатор статуса аудио-связи
+    if (slot.isOccupied) {
+      const voiceIndicator = document.createElement('div');
+      voiceIndicator.className = 'seat-voice-indicator';
+      voiceIndicator.style.cssText = 'font-size: 0.72rem; margin-top: 2px; color: #94a3b8; display: flex; align-items: center; gap: 4px;';
+      if (isMe) {
+        const micActive = window.mafiaVoice && window.mafiaVoice.isMicEnabled && !window.mafiaVoice.userMutedMic;
+        voiceIndicator.innerHTML = micActive 
+          ? '<span style="color:#22c55e;">●</span> Микрофон активен' 
+          : '<span style="color:#ef4444;">●</span> Микрофон выключен';
+      } else {
+        const peer = window.mafiaVoice?.peers?.get(slot.userId);
+        const isConnected = peer && peer.isConnected;
+        voiceIndicator.innerHTML = isConnected 
+          ? '<span style="color:#22c55e;">●</span> Связь установлена' 
+          : '<span style="color:#eab308;">○</span> Подключение P2P...';
+      }
+      playerArea.appendChild(voiceIndicator);
+    }
 
     if (slot.roleTitle) {
       const roleBadge = document.createElement('div');
@@ -641,6 +678,9 @@ function renderLog(events) {
 }
 
 function takeSlot(slotNum) {
+  if (window.mafiaVoice && !window.mafiaVoice.isMicEnabled) {
+    window.mafiaVoice.enableMicrophone().catch(() => {});
+  }
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     connection.invoke("TakeSlot", myUserId, myNickname, slotNum);
   } else {

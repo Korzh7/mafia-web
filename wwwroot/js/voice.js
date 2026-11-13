@@ -1,5 +1,6 @@
 // Профессиональный WebRTC модуль голосовой связи:
-// - Автоматический запуск микрофона при входе на сайт
+// - Автоматический запуск микрофона при входе на сайт и по кнопке
+// - Локальный эхо-тест для мгновенной проверки своего микрофона в наушниках
 // - Гарантированное снятие блокировки звука на iOS Safari, Android и Desktop
 // - 100% звукоизоляция ночной мафии (sender.replaceTrack(null) + remoteTrack.enabled = false + muted)
 // - Жесткое глушение мертвых игроков на передаче и приеме
@@ -12,6 +13,7 @@ class MafiaVoiceEngine {
     this.audioContext = null;
     this.analyser = null;
     this.isMicEnabled = false;
+    this.isEchoTesting = false;
 
     // Пользовательские переключатели (персистентные, не сбрасываются игрой!)
     this.userMutedMic = false;   // Пользователь сам нажал "Заглушить микрофон"
@@ -19,6 +21,9 @@ class MafiaVoiceEngine {
 
     // userId -> { pc, transceiver, sender, audioEl, candidateQueue, remoteTrack, remoteStream, isConnected }
     this.peers = new Map();
+
+    // Множество активных говорящих для сохранения подсветки при ререндере
+    this.activeSpeakers = new Set();
 
     this.iceServers = [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -38,9 +43,6 @@ class MafiaVoiceEngine {
   setupGlobalUnlockListeners() {
     const unlockHandler = () => {
       this.unlockAllAudio();
-      if (!this.isMicEnabled) {
-        this.enableMicrophone();
-      }
     };
 
     ['click', 'touchstart', 'touchend', 'keydown'].forEach(evt => {
@@ -92,6 +94,51 @@ class MafiaVoiceEngine {
       console.warn("[WebRTC] Ожидание разрешения пользователя на использование микрофона:", err);
       this.updateNavbarButtons();
       return false;
+    }
+  }
+
+  // Локальный эхо-тест: воспроизводит свой микрофон в свои наушники на 5 секунд
+  startEchoTest() {
+    if (!this.localStream) {
+      this.enableMicrophone().then(ok => {
+        if (ok) this.startEchoTest();
+      });
+      return;
+    }
+
+    if (this.isEchoTesting) return;
+    this.isEchoTesting = true;
+
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!this.audioContext) {
+        this.audioContext = new AudioCtx();
+      }
+      if (this.audioContext.state === 'suspended') {
+        this.audioContext.resume();
+      }
+
+      const micSource = this.audioContext.createMediaStreamSource(this.localStream);
+      micSource.connect(this.audioContext.destination);
+
+      const btnEcho = document.getElementById('btnEchoTest');
+      let countdown = 5;
+      if (btnEcho) btnEcho.textContent = `🎧 Говорите... ${countdown}с`;
+
+      const timer = setInterval(() => {
+        countdown--;
+        if (countdown > 0 && btnEcho) {
+          btnEcho.textContent = `🎧 Говорите... ${countdown}с`;
+        } else {
+          clearInterval(timer);
+          try { micSource.disconnect(); } catch (e) {}
+          this.isEchoTesting = false;
+          if (btnEcho) btnEcho.textContent = '🎧 Тест микрофона';
+        }
+      }, 1000);
+    } catch (e) {
+      console.warn("[WebRTC] Ошибка запуска эхо-теста:", e);
+      this.isEchoTesting = false;
     }
   }
 
@@ -217,8 +264,9 @@ class MafiaVoiceEngine {
 
       const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
       setInterval(() => {
-        const mySlot = window.currentGameState?.slots?.find(s => s.slotNumber === window.currentGameState.mySlotNumber);
-        const isMeAlive = mySlot ? mySlot.isAlive : (window.currentGameState?.phase === 0 || window.currentGameState?.phase === 5);
+        const state = window.currentGameState;
+        const mySlot = state?.slots?.find(s => s.userId === window.myUserId);
+        const isMeAlive = mySlot ? mySlot.isAlive : true;
 
         if (!this.isMicEnabled || !this.localStream || this.userMutedMic || !isMeAlive) {
           if (this.lastSpeakingState) {
@@ -235,7 +283,7 @@ class MafiaVoiceEngine {
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const avg = sum / dataArray.length;
-        const isSpeaking = avg > 14;
+        const isSpeaking = avg > 10; // чувствительный порог для мобильных микрофонов
 
         if (isSpeaking !== this.lastSpeakingState) {
           this.lastSpeakingState = isSpeaking;
@@ -282,10 +330,16 @@ class MafiaVoiceEngine {
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
     audioEl.preload = 'auto';
-    audioEl.setAttribute('playsinline', 'true');
-    audioEl.setAttribute('webkit-playsinline', 'true');
+    audioEl.setAttribute('playsinline', '');
+    audioEl.setAttribute('webkit-playsinline', '');
     audioEl.setAttribute('data-peer-user-id', peerUserId);
-    audioEl.style.display = 'none';
+    // Для совместимости с iOS Safari не используем display: none
+    audioEl.style.position = 'fixed';
+    audioEl.style.left = '-9999px';
+    audioEl.style.top = '-9999px';
+    audioEl.style.width = '1px';
+    audioEl.style.height = '1px';
+    audioEl.style.opacity = '0.01';
     document.body.appendChild(audioEl);
 
     // Добавляем аудио-трансивер sendrecv сразу
@@ -345,6 +399,7 @@ class MafiaVoiceEngine {
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] ICE статус с ${peerUserId}:`, pc.iceConnectionState);
+      peerInfo.isConnected = (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
       if (pc.iceConnectionState === 'failed') {
         console.warn(`[WebRTC] ICE failed для ${peerUserId}, перезапуск ICE...`);
         if (myUserId < peerUserId) {
@@ -472,10 +527,13 @@ class MafiaVoiceEngine {
     }
   }
 
-  // СТРОГОЕ УПРАВЛЕНИЕ АУДИОПОТОКАМИ (УРОВЕНЬ ТРАНСИВЕРОВ И АУДИО-ЭЛЕМЕНТОВ)
+  // СТРОГОЕ УПРАВЛЕНИЕ АУДИОПОТОКАМИ
   applyPhaseVoiceRules(state) {
-    const mySlot = state.slots.find(s => s.slotNumber === state.mySlotNumber);
-    const isMeAlive = mySlot ? mySlot.isAlive : (state.phase === 0 || state.phase === 5);
+    if (!state) return;
+    window.currentGameState = state;
+
+    const mySlot = state.slots.find(s => s.userId === window.myUserId);
+    const isMeAlive = mySlot ? mySlot.isAlive : true;
     const isMeMafia = mySlot && (mySlot.roleCode === 'mafia' || mySlot.roleCode === 'don');
     const myTrack = this.localStream ? this.localStream.getAudioTracks()[0] : null;
 
@@ -526,14 +584,13 @@ class MafiaVoiceEngine {
       }
     };
 
-    // 1. МЕРТВЫЙ ИГРОК: микрофон заблокирован во всех игровых фазах
+    // 1. МЕРТВЫЙ ИГРОК: микрофон заблокирован во всех фазах
     if (!isMeAlive && state.phase !== 0 && state.phase !== 5) {
       if (myTrack) myTrack.enabled = false;
-      this.peers.forEach(peer => {
+      this.peers.forEach((peer, peerUserId) => {
         setAudioSenderActive(peer, false);
-        const peerSlot = state.slots.find(s => s.userId === peer.audioEl.getAttribute('data-peer-user-id'));
+        const peerSlot = state.slots.find(s => s.userId === peerUserId);
         const isPeerAlive = peerSlot ? peerSlot.isAlive : false;
-        // Мертвый игрок слышит живых днем или в голосовании (но не ночью)
         setPeerPlayback(peer, isPeerAlive && state.phase !== 1 && state.phase !== 4);
       });
       this.updateNavbarButtons();
@@ -552,11 +609,9 @@ class MafiaVoiceEngine {
           const isPeerMafia = peerSlot && peerSlot.isAlive && (peerSlot.roleCode === 'mafia' || peerSlot.roleCode === 'don');
 
           if (isPeerMafia) {
-            // Отправляем звук напарнику и слышим напарника
             setAudioSenderActive(peer, true);
             setPeerPlayback(peer, true);
           } else {
-            // Мирным и шерифу звук не отправляется (0 байт) и мафия их не слышит
             setAudioSenderActive(peer, false);
             setPeerPlayback(peer, false);
           }
@@ -571,10 +626,10 @@ class MafiaVoiceEngine {
         });
       }
     } else if (state.phase === 2) {
-      // 3. ДЕНЬ (Фаза 2): Говорит назначенный спикер (если не лишен слова) ИЛИ игрок, взявший выкрик
-      const isCurrentSpeaker = isMeAlive && (state.currentSpeakerSlot === state.mySlotNumber) && !state.myLosesNextSpeech;
-      const isMeShouting = isMeAlive && (state.activeShoutSlotNumber === state.mySlotNumber);
-      const canSpeak = (isCurrentSpeaker || isMeShouting) && !this.userMutedMic;
+      // 3. ДЕНЬ (Фаза 2): Говорит назначенный спикер ИЛИ выкрик (проверяем через state.canSpeakNow)
+      const isCurrentSpeaker = (state.currentSpeakerSlot === mySlot?.slotNumber) && !mySlot?.losesNextSpeech;
+      const isMeShouting = (state.activeShoutSlotNumber === mySlot?.slotNumber);
+      const canSpeak = (state.canSpeakNow ?? (isCurrentSpeaker || isMeShouting)) && !this.userMutedMic;
       if (myTrack) myTrack.enabled = canSpeak;
 
       this.peers.forEach((peer, peerUserId) => {
@@ -583,25 +638,19 @@ class MafiaVoiceEngine {
         const isPeerSpeaker = peerSlot ? (peerSlot.isCurrentSpeaker && !peerSlot.losesNextSpeech) : false;
         const isPeerShouting = peerSlot ? (peerSlot.slotNumber === state.activeShoutSlotNumber) : false;
 
-        // Отправляем звук, если мы назначенный спикер или взяли выкрик
-        setAudioSenderActive(peer, isCurrentSpeaker || isMeShouting);
-
-        // Слушаем живого спикера и того, кто совершает выкрик
+        setAudioSenderActive(peer, canSpeak);
         setPeerPlayback(peer, isPeerAlive && (isPeerSpeaker || isPeerShouting));
       });
     } else {
-      // 4. Лобби (0), Голосование (3), Конец игры (5): свободный микрофон для всех ЖИВЫХ
+      // 4. Лобби (0), Голосование (3), Конец игры (5): свободный микрофон
       const canSpeak = isMeAlive && !this.userMutedMic;
       if (myTrack) myTrack.enabled = canSpeak;
 
       this.peers.forEach((peer, peerUserId) => {
         const peerSlot = state.slots.find(s => s.userId === peerUserId);
-        const isPeerAlive = peerSlot ? peerSlot.isAlive : (state.phase === 0 || state.phase === 5);
+        const isPeerAlive = peerSlot ? peerSlot.isAlive : true;
 
-        // Отправляем звук, если мы живы
         setAudioSenderActive(peer, isMeAlive);
-
-        // Слушаем живых игроков стола
         setPeerPlayback(peer, isPeerAlive);
       });
     }
@@ -610,6 +659,12 @@ class MafiaVoiceEngine {
   }
 
   highlightSpeaker(userId, isSpeaking) {
+    if (isSpeaking) {
+      this.activeSpeakers.add(userId);
+    } else {
+      this.activeSpeakers.delete(userId);
+    }
+
     const card = document.querySelector(`.seat-card[data-user-id="${userId}"]`);
     if (card) {
       if (isSpeaking) {
