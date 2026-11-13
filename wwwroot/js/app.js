@@ -90,7 +90,8 @@ function renderInitialSeats() {
   }
 }
 
-function initSignalR() {
+async function initSignalR() {
+  await window.mafiaVoice?.configurationReady;
   console.log("Подключение к SignalR...");
   if (elPhaseTitle) elPhaseTitle.textContent = "Синхронизация стола...";
 
@@ -105,6 +106,12 @@ function initSignalR() {
   connection.on("OnWebRtcSignal", (senderUserId, signalStr) => {
     if (window.mafiaVoice) {
       window.mafiaVoice.handleSignal(senderUserId, signalStr);
+    }
+  });
+
+  connection.on("OnVoicePeerReconnected", (userId) => {
+    if (window.mafiaVoice?.peers.has(userId)) {
+      window.mafiaVoice.reconnectPeer(userId);
     }
   });
 
@@ -147,6 +154,7 @@ function initSignalR() {
 
   connection.onreconnected(() => {
     console.log("SignalR переподключен.");
+    window.mafiaVoice?.resetPeers();
     connection.invoke("GetMyState", myUserId);
   });
 

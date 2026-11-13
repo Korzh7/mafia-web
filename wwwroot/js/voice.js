@@ -36,6 +36,16 @@ class MafiaVoiceEngine {
     ];
 
     this.lastSpeakingState = false;
+    this.configurationReady = fetch('/api/voice-config', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      .then(response => {
+        if (!response.ok) throw new Error(`Voice config: ${response.status}`);
+        return response.json();
+      })
+      .then(config => {
+        if (config.iceServers?.length) this.iceServers = config.iceServers;
+        if (!config.hasTurn) console.warn('[WebRTC] TURN is not configured: some networks cannot connect.');
+      })
+      .catch(error => console.warn('[WebRTC] Using default STUN configuration:', error));
     this.setupGlobalUnlockListeners();
   }
 
@@ -298,6 +308,16 @@ class MafiaVoiceEngine {
     }
   }
 
+  resetPeers() {
+    this.peers.forEach(peer => {
+      peer.pc.oniceconnectionstatechange = null;
+      peer.pc.onconnectionstatechange = null;
+      peer.pc.close();
+      peer.audioEl.remove();
+    });
+    this.peers.clear();
+  }
+
   // Синхронизация пиров за столом
   syncPeers(slots, myUserId) {
     slots.forEach(slot => {
@@ -343,8 +363,12 @@ class MafiaVoiceEngine {
     document.body.appendChild(audioEl);
 
     // Добавляем аудио-трансивер sendrecv сразу
-    const transceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
-    const sender = transceiver.sender;
+    // Only the offerer creates the initial transceiver. The answerer must use
+    // the transceiver created by setRemoteDescription, otherwise audio can end
+    // up on a second, unnegotiated m-line.
+    const initiator = myUserId < peerUserId;
+    const transceiver = initiator ? pc.addTransceiver('audio', { direction: 'sendrecv' }) : null;
+    const sender = transceiver?.sender;
 
     const peerInfo = {
       pc: pc,
@@ -354,14 +378,16 @@ class MafiaVoiceEngine {
       candidateQueue: [],
       remoteTrack: null,
       remoteStream: null,
-      isConnected: false
+      isConnected: false,
+      makingOffer: false,
+      signalChain: Promise.resolve()
     };
 
     this.peers.set(peerUserId, peerInfo);
 
     if (this.localStream) {
       const myTrack = this.localStream.getAudioTracks()[0];
-      if (myTrack && !this.userMutedMic) {
+      if (sender && myTrack && !this.userMutedMic) {
         sender.replaceTrack(myTrack).catch(err => console.warn("[WebRTC] Initial replaceTrack error:", err));
       }
     }
@@ -445,9 +471,11 @@ class MafiaVoiceEngine {
   }
 
   renegotiatePeer(peerUserId, pc) {
-    if (pc.signalingState !== 'stable') {
+    const peer = this.peers.get(peerUserId);
+    if (!peer || peer.makingOffer || pc.signalingState !== 'stable') {
       return;
     }
+    peer.makingOffer = true;
 
     pc.createOffer()
       .then(offer => pc.setLocalDescription(offer))
@@ -459,10 +487,24 @@ class MafiaVoiceEngine {
           }));
         }
       })
-      .catch(err => console.error("[WebRTC] Ошибка Offer:", err));
+      .catch(err => console.error("[WebRTC] Ошибка Offer:", err))
+      .finally(() => { peer.makingOffer = false; });
   }
 
-  async handleSignal(senderUserId, signalStr) {
+  handleSignal(senderUserId, signalStr) {
+    if (!this.peers.has(senderUserId)) {
+      this.createPeerConnection(senderUserId, window.myUserId);
+    }
+    const peer = this.peers.get(senderUserId);
+    // SignalR does not await async event handlers. Serialize SDP and ICE so
+    // candidates and repeated offers cannot race setRemoteDescription.
+    peer.signalChain = peer.signalChain
+      .then(() => this.processSignal(senderUserId, signalStr))
+      .catch(err => console.error('[WebRTC] Signal processing failed:', err));
+    return peer.signalChain;
+  }
+
+  async processSignal(senderUserId, signalStr) {
     try {
       const data = JSON.parse(signalStr);
       let peer = this.peers.get(senderUserId);
@@ -485,6 +527,14 @@ class MafiaVoiceEngine {
         }
 
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        peer.transceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'audio');
+        if (peer.transceiver) peer.transceiver.direction = 'sendrecv';
+        peer.sender = peer.transceiver?.sender;
+        const track = this.localStream?.getAudioTracks()[0];
+        if (peer.sender) {
+          await peer.sender.replaceTrack(track || null);
+        }
+        if (window.currentGameState) this.applyPhaseVoiceRules(window.currentGameState);
 
         while (peer.candidateQueue.length > 0) {
           const cand = peer.candidateQueue.shift();

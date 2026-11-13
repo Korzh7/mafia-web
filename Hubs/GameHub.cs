@@ -17,7 +17,12 @@ public class GameHub : Hub
 
     public async Task GetMyState(string userId)
     {
+        var previousConnection = _gameService.GetConnectionIdByUserId(userId);
         _gameService.UpdateConnectionId(userId, Context.ConnectionId);
+        if (previousConnection != Context.ConnectionId)
+        {
+            await Clients.Others.SendAsync("OnVoicePeerReconnected", userId);
+        }
         var state = _gameService.GetPublicStateForUser(userId);
         await Clients.Caller.SendAsync("OnStateUpdated", state);
     }
