@@ -328,6 +328,16 @@ function updateUI(state) {
     }
   }
 
+  const btnForceEndGame = document.getElementById('btnForceEndGame');
+  if (btnForceEndGame) {
+    btnForceEndGame.style.display = (state.phase !== 0) ? 'inline-block' : 'none';
+    btnForceEndGame.onclick = () => {
+      if (confirm("Вы действительно хотите досрочно завершить текущую игру и вернуться в лобби?")) {
+        resetGame();
+      }
+    };
+  }
+
   renderSeats(state);
   renderHUD(state);
   renderLog(state.recentEvents);
@@ -653,6 +663,19 @@ function renderHUD(state) {
     btnRestart.textContent = '🔄 Вернуться в лобби';
     btnRestart.onclick = () => resetGame();
     elHudActions.appendChild(btnRestart);
+  } else if (state.phase > 0) {
+    // В любой активной игровой фазе (1, 2, 3, 4) доступна кнопка завершения игры
+    const btnAbort = document.createElement('button');
+    btnAbort.className = 'btn btn-danger';
+    btnAbort.style.cssText = 'width: auto; padding: 6px 14px; margin-left: auto;';
+    btnAbort.textContent = '🛑 Завершить игру';
+    btnAbort.title = 'Досрочно прервать игру и вернуть всех в лобби';
+    btnAbort.onclick = () => {
+      if (confirm('Вы действительно хотите досрочно завершить игру и сбросить стол в лобби?')) {
+        resetGame();
+      }
+    };
+    elHudActions.appendChild(btnAbort);
   }
 }
 
