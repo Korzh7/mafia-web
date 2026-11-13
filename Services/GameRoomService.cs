@@ -18,14 +18,15 @@ public class GameRoomService
     public int SecondsLeft { get; private set; } = 0;
     public int? CurrentSpeakerSlot { get; private set; }
     public GameWinner Winner { get; private set; } = GameWinner.None;
-    
-    // Кандидаты на автокатастрофу (при ничьей)
-    private List<int> _tieSlots = new();
 
     // Ограничения правил: 1 выставление за речь и 1 проверка за ночь
     private bool _speakerNominatedThisTurn = false;
     private int? _sheriffCheckedSlotThisNight = null;
     private int? _donCheckedSlotThisNight = null;
+
+    // Слоты, уже отговорившие в текущем дне (круг речи завершен, когда отговорили все живые).
+    // Множество надежнее позиции стартового спикера: игроки могут выбывать посреди дня.
+    private readonly HashSet<int> _spokenSlotsThisDay = new();
 
     // Механика выкриков за фол (максимум 2 выкрика, 3-й выкрик лишает следующей речи)
     private int? _activeShoutSlotNumber = null;
@@ -261,6 +262,7 @@ public class GameRoomService
             _sheriffChecks.Clear();
             _donChecks.Clear();
             _speakerNominatedThisTurn = false;
+            _spokenSlotsThisDay.Clear();
             _sheriffCheckedSlotThisNight = null;
             _donCheckedSlotThisNight = null;
             _activeShoutSlotNumber = null;
@@ -342,11 +344,17 @@ public class GameRoomService
             if (CurrentSpeakerSlot != actor.SlotNumber)
                 return (false, "Выставлять кандидатуру можно только в свою минуту речи!");
 
+            if (actor.LosesNextSpeech)
+                return (false, "Вы лишены слова за 3-й выкрик/фол и не можете выставлять кандидатов.");
+
             if (_speakerNominatedThisTurn)
                 return (false, "Вы уже выставили одного игрока в эту минуту! По правилам Мафии за свою речь можно выставить только одного кандидата.");
 
             if (targetSlotNumber < 1 || targetSlotNumber > _slots.Count)
                 return (false, "Неверный номер игрока.");
+
+            if (targetSlotNumber == actor.SlotNumber)
+                return (false, "Нельзя выставить на голосование самого себя.");
 
             var target = _slots[targetSlotNumber - 1];
             if (string.IsNullOrEmpty(target.UserId) || !target.IsAlive)
@@ -416,6 +424,9 @@ public class GameRoomService
             if (!target.IsAlive || string.IsNullOrEmpty(target.UserId))
                 return (false, "Нельзя выбрать мертвого или отсутствующего игрока.");
 
+            if (targetSlotNumber == actor.SlotNumber)
+                return (false, "Нельзя выбирать себя в качестве ночной цели.");
+
             if (actor.Role is PlayerRole.Mafia or PlayerRole.Don)
             {
                 actor.NightTargetSlot = targetSlotNumber;
@@ -481,6 +492,9 @@ public class GameRoomService
             if (!target.IsAlive || string.IsNullOrEmpty(target.UserId))
                 return (false, "Нельзя проверить мертвого или отсутствующего игрока.");
 
+            if (targetSlotNumber == actor.SlotNumber)
+                return (false, "Нет смысла проверять самого себя — потратьте проверку на другого игрока.");
+
             var isSheriff = target.Role == PlayerRole.Sheriff;
             var res = isSheriff ? "ШЕРИФ!" : "НЕ ШЕРИФ";
             _donChecks[targetSlotNumber] = res;
@@ -507,6 +521,11 @@ public class GameRoomService
             if (target.Fouls >= 4)
             {
                 target.IsAlive = false;
+                if (_activeShoutSlotNumber == targetSlotNumber)
+                {
+                    _activeShoutSlotNumber = null;
+                    _activeShoutSecondsLeft = 0;
+                }
                 AddEvent($"Игрок #{targetSlotNumber} ({target.Nickname}) получил 4-й фол и дисквалифицирован из-за стола!", "death");
                 CheckGameOver();
                 return (true, $"Игрок #{targetSlotNumber} дисквалифицирован за 4 фола.");
@@ -574,13 +593,19 @@ public class GameRoomService
         }
     }
 
-    // Обработка тика таймера каждую секунду
-    public void TickSecond()
+    // Обработка тика таймера каждую секунду.
+    // Возвращает true, если видимое игрокам состояние изменилось (фаза, спикер, активный выкрик)
+    // и клиентам нужен полный рефреш состояния, а не только значение таймера.
+    public bool TickSecond()
     {
         lock (_lock)
         {
             if (Phase is GamePhase.Lobby or GamePhase.GameOver)
-                return;
+                return false;
+
+            var prevPhase = Phase;
+            var prevSpeaker = CurrentSpeakerSlot;
+            var prevShoutSlot = _activeShoutSlotNumber;
 
             if (_activeShoutSecondsLeft > 0)
             {
@@ -594,7 +619,7 @@ public class GameRoomService
             if (SecondsLeft > 0)
             {
                 SecondsLeft--;
-                return;
+                return prevShoutSlot != _activeShoutSlotNumber;
             }
 
             // Таймер истек — переключаем фазы
@@ -620,6 +645,8 @@ public class GameRoomService
                     FinishNight();
                     break;
             }
+
+            return prevPhase != Phase || prevSpeaker != CurrentSpeakerSlot || prevShoutSlot != _activeShoutSlotNumber;
         }
     }
 
@@ -629,6 +656,7 @@ public class GameRoomService
         Phase = GamePhase.DayDiscussion;
         _nominatedSlots.Clear();
         _speakerNominatedThisTurn = false;
+        _spokenSlotsThisDay.Clear();
         _activeShoutSlotNumber = null;
         _activeShoutSecondsLeft = 0;
 
@@ -663,41 +691,60 @@ public class GameRoomService
     private void NextSpeakerOrVote()
     {
         var alive = _slots.Where(s => s.IsAlive && !string.IsNullOrEmpty(s.UserId)).OrderBy(s => s.SlotNumber).ToList();
-        int currentIdx = alive.FindIndex(s => s.SlotNumber == CurrentSpeakerSlot);
+        if (alive.Count == 0)
+        {
+            EndGame(GameWinner.None, "Все игроки погибли.");
+            return;
+        }
 
-        // Ищем следующего живого игрока в круге
-        int nextIdx = currentIdx + 1;
+        // Речь текущего спикера (произнесенная или пропущенная за лишение слова) засчитана
+        if (CurrentSpeakerSlot.HasValue)
+        {
+            _spokenSlotsThisDay.Add(CurrentSpeakerSlot.Value);
+        }
 
-        // Если круг завершился
-        int startIdx = (DayNumber - 1) % alive.Count;
-        if (nextIdx >= alive.Count) nextIdx = 0;
-
-        if (nextIdx == startIdx)
+        // Круг завершен, когда отговорили все живые
+        bool everyoneSpoke = alive.All(s => _spokenSlotsThisDay.Contains(s.SlotNumber));
+        if (everyoneSpoke)
         {
             // Все высказались — переходим к голосованию
             _activeShoutSlotNumber = null;
             _activeShoutSecondsLeft = 0;
             StartVoting();
+            return;
+        }
+
+        // Ищем следующего живого игрока в круге
+        int currentIdx = alive.FindIndex(s => s.SlotNumber == CurrentSpeakerSlot);
+        int nextIdx;
+        if (currentIdx >= 0)
+        {
+            nextIdx = (currentIdx + 1) % alive.Count;
         }
         else
         {
-            CurrentSpeakerSlot = alive[nextIdx].SlotNumber;
-            _speakerNominatedThisTurn = false;
-            _activeShoutSlotNumber = null;
-            _activeShoutSecondsLeft = 0;
-            var speaker = _slots[CurrentSpeakerSlot.Value - 1];
+            // Спикер выбыл посреди своей речи (дисквалификация) — передаем слово
+            // следующему живому игроку по порядку слотов после него
+            nextIdx = alive.FindIndex(s => CurrentSpeakerSlot.HasValue && s.SlotNumber > CurrentSpeakerSlot.Value);
+            if (nextIdx < 0) nextIdx = 0;
+        }
 
-            if (speaker.LosesNextSpeech)
-            {
-                speaker.LosesNextSpeech = false;
-                SecondsLeft = 4;
-                AddEvent($"🔇 Игрок #{speaker.SlotNumber} ({speaker.Nickname}) ЛИШЁН СЛОВА за 3-й выкрик/фол и пропускает свою речь!", "alert");
-            }
-            else
-            {
-                SecondsLeft = 60;
-                AddEvent($"Слово переходит к Игроку #{speaker.SlotNumber} ({speaker.Nickname}).", "info");
-            }
+        CurrentSpeakerSlot = alive[nextIdx].SlotNumber;
+        _speakerNominatedThisTurn = false;
+        _activeShoutSlotNumber = null;
+        _activeShoutSecondsLeft = 0;
+        var speaker = _slots[CurrentSpeakerSlot.Value - 1];
+
+        if (speaker.LosesNextSpeech)
+        {
+            speaker.LosesNextSpeech = false;
+            SecondsLeft = 4;
+            AddEvent($"🔇 Игрок #{speaker.SlotNumber} ({speaker.Nickname}) ЛИШЁН СЛОВА за 3-й выкрик/фол и пропускает свою речь!", "alert");
+        }
+        else
+        {
+            SecondsLeft = 60;
+            AddEvent($"Слово переходит к Игроку #{speaker.SlotNumber} ({speaker.Nickname}).", "info");
         }
     }
 
@@ -873,6 +920,7 @@ public class GameRoomService
             _sheriffChecks.Clear();
             _donChecks.Clear();
             _speakerNominatedThisTurn = false;
+            _spokenSlotsThisDay.Clear();
             _sheriffCheckedSlotThisNight = null;
             _donCheckedSlotThisNight = null;
             _activeShoutSlotNumber = null;

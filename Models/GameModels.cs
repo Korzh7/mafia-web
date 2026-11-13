@@ -28,7 +28,7 @@ public enum GameWinner
 
 public class PlayerSlot
 {
-    public int SlotNumber { get; set; } // 1..8
+    public int SlotNumber { get; set; } // 1..12
     public string? UserId { get; set; }
     public string? ConnectionId { get; set; }
     public string Nickname { get; set; } = string.Empty;

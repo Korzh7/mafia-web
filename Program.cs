@@ -13,7 +13,8 @@ if (!string.IsNullOrEmpty(port))
 // Сервисы
 builder.Services.AddSignalR(options =>
 {
-    options.EnableDetailedErrors = true;
+    // Подробные ошибки SignalR — только в Development, чтобы не палить исключения клиентам
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
 });
 
 builder.Services.AddSingleton<GameRoomService>();

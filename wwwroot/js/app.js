@@ -152,6 +152,20 @@ function initSignalR() {
     connection.invoke("GetMyState", myUserId);
   });
 
+  // Автоматический перезапуск после того, как встроенные ретраи withAutomaticReconnect исчерпаны
+  connection.onclose((err) => {
+    console.warn("SignalR соединение закрыто, пробуем перезапустить через 3 секунды...", err);
+    if (elPhaseTitle) elPhaseTitle.textContent = "Соединение потеряно...";
+    if (elPhaseDescription) elPhaseDescription.textContent = "Пытаемся восстановить связь с сервером...";
+    setTimeout(() => {
+      if (connection.state === signalR.HubConnectionState.Disconnected) {
+        connection.start()
+          .then(() => connection.invoke("GetMyState", myUserId))
+          .catch(() => {});
+      }
+    }, 3000);
+  });
+
   connection.start()
     .then(() => {
       console.log("SignalR успешно подключен!");
@@ -292,6 +306,10 @@ function updateUI(state) {
     }
   }
 
+  // Динамический бейдж размера стола в шапке
+  const brandBadge = document.getElementById('brandBadge');
+  if (brandBadge) brandBadge.textContent = `${state.maxSlots || state.slots.length} МЕСТ`;
+
   renderSeats(state);
   renderHUD(state);
   renderLog(state.recentEvents);
@@ -390,7 +408,9 @@ function renderSeats(state) {
     if (state.knownChecks && state.knownChecks[slot.slotNumber]) {
       const checkRes = state.knownChecks[slot.slotNumber];
       const checkBadge = document.createElement('div');
-      const isBlackOrSheriff = checkRes.includes('ЧЕРНЫЙ') || checkRes.includes('ШЕРИФ');
+      // Черные результаты: "ЧЕРНЫЙ (МАФИЯ)" у шерифа и "ШЕРИФ!" у дона.
+      // Важно: "НЕ ШЕРИФ" тоже содержит подстроку "ШЕРИФ", но это красный результат.
+      const isBlackOrSheriff = checkRes.includes('ЧЕРНЫЙ') || (checkRes.includes('ШЕРИФ') && !checkRes.includes('НЕ'));
       checkBadge.className = 'check-result-badge ' + (isBlackOrSheriff ? 'check-black' : 'check-red');
       checkBadge.textContent = '🔍 ' + checkRes;
       playerArea.appendChild(checkBadge);
@@ -603,7 +623,12 @@ function renderLog(events) {
     const date = new Date(evt.timestamp);
     const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    item.innerHTML = `<span class="log-time">${timeStr}</span>${evt.text}`;
+    // Текст события содержит никнеймы игроков — вставляем через textContent (защита от XSS)
+    const time = document.createElement('span');
+    time.className = 'log-time';
+    time.textContent = timeStr;
+    item.appendChild(time);
+    item.appendChild(document.createTextNode(evt.text));
     elEventLog.appendChild(item);
   });
   elEventLog.scrollTop = elEventLog.scrollHeight;
@@ -718,10 +743,18 @@ function showNightBanner(msg) {
     banner.classList.add('banner-kill');
   }
 
-  banner.innerHTML = `
-    <div style="font-size: 1.05rem; font-weight: 700; line-height: 1.4;">${msg}</div>
-    <button class="btn" style="width: auto; padding: 4px 12px; font-size: 0.85rem;" onclick="this.parentElement.remove()">✕ Закрыть</button>
-  `;
+  // Сообщение содержит никнеймы игроков — только textContent (защита от XSS)
+  const msgDiv = document.createElement('div');
+  msgDiv.style.cssText = 'font-size: 1.05rem; font-weight: 700; line-height: 1.4;';
+  msgDiv.textContent = msg;
+  banner.appendChild(msgDiv);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'btn';
+  closeBtn.style.cssText = 'width: auto; padding: 4px 12px; font-size: 0.85rem;';
+  closeBtn.textContent = '✕ Закрыть';
+  closeBtn.onclick = () => banner.remove();
+  banner.appendChild(closeBtn);
 
   setTimeout(() => {
     if (banner && banner.parentElement) {

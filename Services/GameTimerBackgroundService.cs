@@ -27,23 +27,26 @@ public class GameTimerBackgroundService : BackgroundService
         {
             try
             {
-                var prevPhase = _gameService.Phase;
-                var prevSpeaker = _gameService.CurrentSpeakerSlot;
-
-                _gameService.TickSecond();
+                // TickSecond возвращает true, если изменилась фаза, спикер или активный выкрик —
+                // клиентам нужен полный рефреш, а не только значение таймера
+                var stateChanged = _gameService.TickSecond();
 
                 // Если игра идет, рассылаем таймер и состояние
-                if (_gameService.Phase != Models.GamePhase.Lobby)
+                if (_gameService.Phase is not (Models.GamePhase.Lobby or Models.GamePhase.GameOver))
                 {
                     // Оповещаем клиентов
                     await _hubContext.Clients.All.SendAsync("OnTimerTick", _gameService.SecondsLeft, stoppingToken);
 
-                    // Если сменилась фаза или спикер — отправляем полный апдейт
-                    if (prevPhase != _gameService.Phase || prevSpeaker != _gameService.CurrentSpeakerSlot)
+                    if (stateChanged)
                     {
                         await BroadcastGameStateAsync(stoppingToken);
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                // Штатная остановка сервиса — просто выходим
+                break;
             }
             catch (Exception ex)
             {
@@ -55,7 +58,6 @@ public class GameTimerBackgroundService : BackgroundService
     private async Task BroadcastGameStateAsync(CancellationToken ct)
     {
         // Каждому клиенту нужно прислать состояние с его перспективы (роли других скрыты!)
-        // Для простоты отправляем персональное состояние через вызов на клиенте или запрос
         await _hubContext.Clients.All.SendAsync("RequestStateRefresh", ct);
     }
 }
