@@ -1,16 +1,9 @@
 // Основная клиентская логика
 let connection = null;
 let currentGameState = null;
-let myUserId = localStorage.getItem('mafia_user_id');
+let myUserId = null; // Идентичность устанавливается только серверной cookie-сессией.
 let myNickname = localStorage.getItem('mafia_nickname') || 'Игрок ' + Math.floor(Math.random() * 900 + 100);
-
-if (!myUserId) {
-  myUserId = 'usr_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
-  localStorage.setItem('mafia_user_id', myUserId);
-}
-
-window.myUserId = myUserId;
-
+window.myUserId = null;
 // DOM элементы (инициализируются в init)
 let elNicknameDisplay = null;
 let elPhaseTitle = null;
@@ -45,6 +38,7 @@ function init() {
   elTableSizeSelect = document.getElementById('tableSizeSelect');
 
   if (elTableSizeSelect) {
+    elTableSizeSelect.disabled = true;
     elTableSizeSelect.addEventListener('change', (e) => {
       const configCode = e.target.value;
       setTableSize(configCode);
@@ -91,7 +85,23 @@ function renderInitialSeats() {
 }
 
 async function initSignalR() {
-  await window.mafiaVoice?.configurationReady;
+  try {
+    const response = await fetch('/api/session', { method: 'POST', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const session = await response.json();
+    if (typeof session.userId !== 'string' || !session.userId.trim()) {
+      throw new Error('Сервер не вернул идентификатор сессии');
+    }
+    myUserId = session.userId;
+    window.myUserId = myUserId;
+    try { localStorage.setItem('mafia_user_id', myUserId); } catch (_) { /* Cookie-сессия работает без localStorage. */ }
+  } catch (err) {
+    console.error('Не удалось создать сессию:', err);
+    if (elPhaseTitle) elPhaseTitle.textContent = 'Ошибка создания сессии';
+    if (elPhaseDescription) elPhaseDescription.textContent = 'Не удалось создать серверную сессию. Подключение отменено. Обновите страницу, чтобы повторить попытку.';
+    return;
+  }
+  await window.mafiaVoice?.loadConfiguration();
   console.log("Подключение к SignalR...");
   if (elPhaseTitle) elPhaseTitle.textContent = "Синхронизация стола...";
 
@@ -317,6 +327,7 @@ function updateUI(state) {
   if (elLobbySettingsBar) {
     elLobbySettingsBar.style.display = (state.phase === 0) ? 'flex' : 'none';
   }
+  if (elTableSizeSelect) elTableSizeSelect.disabled = !isHost(state) || !state.mySlotNumber || state.phase !== 0;
   if (elTableSizeSelect && state.phase === 0) {
     const curConfig = state.roomConfigCode || (state.maxSlots || state.slots.length).toString();
     if (elTableSizeSelect.value !== curConfig) {
@@ -338,7 +349,7 @@ function updateUI(state) {
 
   const btnForceEndGame = document.getElementById('btnForceEndGame');
   if (btnForceEndGame) {
-    btnForceEndGame.style.display = (state.phase !== 0) ? 'inline-block' : 'none';
+    btnForceEndGame.style.display = (state.phase !== 0 && isHost(state)) ? 'inline-block' : 'none';
     btnForceEndGame.onclick = () => {
       if (confirm("Вы действительно хотите досрочно завершить текущую игру и вернуться в лобби?")) {
         resetGame();
@@ -568,15 +579,7 @@ function renderSeats(state) {
         }
       }
 
-      // Назначение фола во время дня или голосования
-      if ((state.phase === 2 || state.phase === 3) && slot.isAlive && slot.isOccupied && !isMe) {
-        const btnFoul = document.createElement('button');
-        btnFoul.className = 'btn btn-foul';
-        btnFoul.textContent = '+ Фол';
-        btnFoul.title = 'Вынести предупреждение/фол';
-        btnFoul.onclick = () => addFoul(slot.slotNumber);
-        actions.appendChild(btnFoul);
-      }
+
     }
 
     card.appendChild(actions);
@@ -598,17 +601,49 @@ function renderHUD(state) {
   }
 
   elHudActions.innerHTML = '';
+  const info = text => {
+    const node = document.createElement('div');
+    node.style.cssText = 'width:100%;font-size:0.9rem;color:var(--text-muted);';
+    node.textContent = text;
+    elHudActions.appendChild(node);
+  };
+  if (state.phase === 6) {
+    info(`Перестрелка: по 30 секунд на речь. Кандидаты: ${(state.tieCandidateSlots || []).map(n => '#' + n).join(', ')}. Номинации и выкрики недоступны; затем повторное голосование.`);
+  }
+  if (state.phase === 3) {
+    const candidates = state.nominatedSlots || [];
+    const last = candidates[candidates.length - 1];
+    info(`Голосование, круг ${state.votingRound || 1}. Если не проголосовать до конца таймера, голос автоматически уйдёт последнему кандидату${last != null ? ' #' + last : ''}. Воздержаться нельзя.`);
+    const ownVote = state.slots.find(s => s.slotNumber === state.mySlotNumber)?.votedForSlot;
+    if (state.mySlotNumber) info(ownVote != null ? `Ваш голос: против #${ownVote}.` : 'Ваш голос пока не подан.');
+  }
+  if (state.phase === 7) {
+    info(`Подъём группы: ${(state.tieCandidateSlots || []).map(n => '#' + n).join(', ')}. За: ${state.groupVotesFor ?? 0}; против (включая воздержавшихся): ${state.groupVotesAgainst ?? 0}.`);
+    info('Группа выбывает только при строгом большинстве всех живых игроков. Воздержание или отсутствие голоса считается против подъёма; автоматического голоса за последнего кандидата здесь нет.');
+    if (state.mySlotNumber) info(state.myGroupVote === true ? 'Ваш голос: за подъём группы.' : state.myGroupVote === false ? 'Ваш голос: против подъёма группы.' : 'Ваш голос не подан (воздержание — против подъёма).');
+    if (state.canGroupVoteNow) {
+      for (const support of [true, false]) {
+        const button = document.createElement('button');
+        button.className = 'btn ' + (support ? 'btn-danger' : 'btn-primary');
+        button.textContent = (state.myGroupVote === support ? '✓ ' : '') + (support ? 'За подъём группы' : 'Против подъёма группы');
+        button.onclick = () => voteGroup(support);
+        elHudActions.appendChild(button);
+      }
+    }
+  }
 
-  if (state.phase === 0) {
+  if (state.phase === 0 && isHost(state)) {
     const btnStart = document.createElement('button');
     btnStart.className = 'btn btn-gold';
     btnStart.style.maxWidth = '200px';
     btnStart.textContent = '▶ Запустить игру';
+    btnStart.disabled = !canStartGame(state);
+    btnStart.title = btnStart.disabled ? 'Нужно минимум 4 игрока (2 в тестовом режиме), и все занятые места должны быть готовы' : '';
     btnStart.onclick = () => startGame();
     elHudActions.appendChild(btnStart);
   }
 
-  if (state.phase === 2) {
+  if (state.phase === 2 || state.phase === 6) {
     const isSpeaker = state.mySlotNumber && (state.currentSpeakerSlot === state.mySlotNumber);
     const mySlot = state.slots.find(s => s.slotNumber === state.mySlotNumber);
     const isMeAlive = mySlot ? mySlot.isAlive : false;
@@ -627,7 +662,7 @@ function renderHUD(state) {
         btnPass.onclick = () => passSpeech();
         elHudActions.appendChild(btnPass);
       }
-    } else if (isMeAlive) {
+    } else if (isMeAlive && state.phase === 2) {
       // Механика выкрика за фол
       if (state.activeShoutSlotNumber === state.mySlotNumber) {
         const btnShouting = document.createElement('button');
@@ -665,13 +700,13 @@ function renderHUD(state) {
     }
   }
 
-  if (state.phase === 5) {
+  if (state.phase === 5 && isHost(state)) {
     const btnRestart = document.createElement('button');
     btnRestart.className = 'btn btn-primary';
     btnRestart.textContent = '🔄 Вернуться в лобби';
     btnRestart.onclick = () => resetGame();
     elHudActions.appendChild(btnRestart);
-  } else if (state.phase > 0) {
+  } else if (state.phase > 0 && isHost(state)) {
     // В любой активной игровой фазе (1, 2, 3, 4) доступна кнопка завершения игры
     const btnAbort = document.createElement('button');
     btnAbort.className = 'btn btn-danger';
@@ -684,6 +719,24 @@ function renderHUD(state) {
       }
     };
     elHudActions.appendChild(btnAbort);
+  }
+}
+
+function isHost(state = currentGameState) {
+  return !!myUserId && !!state && state.hostUserId === myUserId && !!state.mySlotNumber;
+}
+
+function canStartGame(state = currentGameState) {
+  if (!state || state.phase !== 0 || !isHost(state)) return false;
+  const occupied = state.slots.filter(s => s.isOccupied);
+  const minimum = ['2_peaceful', '2_mafia'].includes(state.roomConfigCode) ? 2 : 4;
+  return occupied.length >= minimum && occupied.every(s => s.isReady);
+}
+
+function voteGroup(support) {
+  if (currentGameState?.phase === 7 && currentGameState.canGroupVoteNow &&
+      connection?.state === signalR.HubConnectionState.Connected) {
+    connection.invoke('VoteGroup', myUserId, support);
   }
 }
 
@@ -732,6 +785,7 @@ function toggleReady() {
 }
 
 function startGame() {
+  if (!canStartGame()) return;
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     connection.invoke("StartGame");
   }
@@ -767,13 +821,6 @@ function donCheck(targetSlot) {
   }
 }
 
-function addFoul(targetSlot) {
-  if (connection && connection.state === signalR.HubConnectionState.Connected) {
-    if (confirm(`Выписать замечание (фол) Игроку #${targetSlot}?`)) {
-      connection.invoke("AddFoul", targetSlot);
-    }
-  }
-}
 
 function shout() {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
@@ -788,12 +835,14 @@ function shoutConfirm() {
 }
 
 function setTableSize(sizeOrCode) {
+  if (!isHost()) return;
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     connection.invoke("ConfigureTable", sizeOrCode.toString());
   }
 }
 
 function resetGame() {
+  if (!isHost()) return;
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     connection.invoke("ResetGame");
   }

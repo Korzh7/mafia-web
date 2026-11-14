@@ -1,5 +1,8 @@
 using MafiaWeb.Hubs;
 using MafiaWeb.Services;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,25 +23,65 @@ builder.Services.AddSignalR(options =>
 builder.Services.AddSingleton<GameRoomService>();
 builder.Services.AddHostedService<GameTimerBackgroundService>();
 
-builder.Services.AddCors(options =>
-{
-    options.AddDefaultPolicy(policy =>
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
     {
-        policy.AllowAnyHeader()
-              .AllowAnyMethod()
-              .SetIsOriginAllowed(_ => true)
-              .AllowCredentials();
+        options.Cookie.Name = "MafiaWeb.Session";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
+        options.ExpireTimeSpan = TimeSpan.FromDays(30);
+        options.SlidingExpiration = true;
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
     });
-});
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-app.UseCors();
+// Reject cross-site session creation and WebSocket handshakes. CORS is not
+// enabled: the browser client and server intentionally share the same origin.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/gameHub") || context.Request.Path == "/api/session")
+    {
+        var origin = context.Request.Headers.Origin.ToString();
+        if (!string.IsNullOrEmpty(origin) &&
+            (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+             !string.Equals(uri.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase)))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+    }
+    await next();
+});
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseWebSockets();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapHub<GameHub>("/gameHub");
+app.MapPost("/api/session", async (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (string.IsNullOrEmpty(userId))
+    {
+        userId = "usr_" + Guid.NewGuid().ToString("N");
+        var identity = new ClaimsIdentity(new[] { new Claim(ClaimTypes.NameIdentifier, userId) },
+            CookieAuthenticationDefaults.AuthenticationScheme);
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme,
+            new ClaimsPrincipal(identity), new AuthenticationProperties { IsPersistent = true });
+    }
+    return Results.Ok(new { userId });
+});
+
+app.MapHub<GameHub>("/gameHub").RequireAuthorization();
 
 // TURN credentials are delivered to browsers because WebRTC uses them directly.
 // Use a dedicated, restricted TURN account (not your provider API key).
@@ -58,7 +101,7 @@ app.MapGet("/api/voice-config", (IConfiguration configuration, HttpContext conte
     if (hasTurn)
         servers.Add(new { urls, username, credential });
     return Results.Ok(new { iceServers = servers, hasTurn });
-});
+}).RequireAuthorization();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTime.UtcNow }));
 

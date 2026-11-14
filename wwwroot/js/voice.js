@@ -36,6 +36,11 @@ class MafiaVoiceEngine {
     ];
 
     this.lastSpeakingState = false;
+    this.configurationReady = Promise.resolve();
+    this.setupGlobalUnlockListeners();
+  }
+
+  loadConfiguration() {
     this.configurationReady = fetch('/api/voice-config', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
       .then(response => {
         if (!response.ok) throw new Error(`Voice config: ${response.status}`);
@@ -46,7 +51,7 @@ class MafiaVoiceEngine {
         if (!config.hasTurn) console.warn('[WebRTC] TURN is not configured: some networks cannot connect.');
       })
       .catch(error => console.warn('[WebRTC] Using default STUN configuration:', error));
-    this.setupGlobalUnlockListeners();
+    return this.configurationReady;
   }
 
   // Регистрация постоянных слушателей пользовательских жестов для снятия блокировки звука в iOS/Android
@@ -675,10 +680,10 @@ class MafiaVoiceEngine {
           setPeerPlayback(peer, false);
         });
       }
-    } else if (state.phase === 2) {
+    } else if (state.phase === 2 || state.phase === 6) {
       // 3. ДЕНЬ (Фаза 2): Говорит назначенный спикер ИЛИ выкрик (проверяем через state.canSpeakNow)
       const isCurrentSpeaker = (state.currentSpeakerSlot === mySlot?.slotNumber) && !mySlot?.losesNextSpeech;
-      const isMeShouting = (state.activeShoutSlotNumber === mySlot?.slotNumber);
+      const isMeShouting = (state.phase === 2 && state.activeShoutSlotNumber === mySlot?.slotNumber);
       const canSpeak = (state.canSpeakNow ?? (isCurrentSpeaker || isMeShouting)) && !this.userMutedMic;
       if (myTrack) myTrack.enabled = canSpeak;
 
@@ -686,13 +691,13 @@ class MafiaVoiceEngine {
         const peerSlot = state.slots.find(s => s.userId === peerUserId);
         const isPeerAlive = peerSlot ? peerSlot.isAlive : false;
         const isPeerSpeaker = peerSlot ? (peerSlot.isCurrentSpeaker && !peerSlot.losesNextSpeech) : false;
-        const isPeerShouting = peerSlot ? (peerSlot.slotNumber === state.activeShoutSlotNumber) : false;
+        const isPeerShouting = peerSlot ? (state.phase === 2 && peerSlot.slotNumber === state.activeShoutSlotNumber) : false;
 
         setAudioSenderActive(peer, canSpeak);
         setPeerPlayback(peer, isPeerAlive && (isPeerSpeaker || isPeerShouting));
       });
     } else {
-      // 4. Лобби (0), Голосование (3), Конец игры (5): свободный микрофон
+      // 4. Лобби (0), Голосование (3), Подъём группы (7), Конец игры (5): свободный микрофон
       const canSpeak = isMeAlive && !this.userMutedMic;
       if (myTrack) myTrack.enabled = canSpeak;
 

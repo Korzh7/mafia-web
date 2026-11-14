@@ -20,6 +20,13 @@ public class PublicPlayerDto
 
 public class PublicGameStateDto
 {
+    public string? HostUserId { get; set; }
+    public int VotingRound { get; set; }
+    public List<int> TieCandidateSlots { get; set; } = new();
+    public int GroupVotesFor { get; set; }
+    public int GroupVotesAgainst { get; set; }
+    public bool CanGroupVoteNow { get; set; }
+    public bool? MyGroupVote { get; set; }
     public GamePhase Phase { get; set; }
     public string PhaseTitle { get; set; } = string.Empty;
     public string PhaseDescription { get; set; } = string.Empty;

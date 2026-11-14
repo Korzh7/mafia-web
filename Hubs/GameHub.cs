@@ -1,9 +1,11 @@
 using MafiaWeb.Models;
+using System.Security.Claims;
 using MafiaWeb.Services;
 using Microsoft.AspNetCore.SignalR;
 
 namespace MafiaWeb.Hubs;
 
+[Microsoft.AspNetCore.Authorization.Authorize]
 public class GameHub : Hub
 {
     private readonly GameRoomService _gameService;
@@ -15,8 +17,34 @@ public class GameHub : Hub
         _logger = logger;
     }
 
+    private string RequireIdentity(string claimedUserId)
+    {
+        var actual = Context.User?.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(actual) || actual != claimedUserId)
+            throw new HubException("Недопустимый идентификатор игрока.");
+        return actual;
+    }
+
+    private void RequireHost()
+    {
+        var actual = Context.User?.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(actual) || actual != _gameService.HostUserId)
+            throw new HubException("Это действие доступно только хозяину стола.");
+    }
+
+    public async Task VoteGroup(string userId, bool support)
+    {
+        RequireIdentity(userId);
+        var result = _gameService.VoteGroup(userId, support);
+        if (!result.Success)
+            await Clients.Caller.SendAsync("OnErrorNotification", result.Message);
+        else
+            await BroadcastStateToAllAsync();
+    }
+
     public async Task GetMyState(string userId)
     {
+        RequireIdentity(userId);
         var previousConnection = _gameService.GetConnectionIdByUserId(userId);
         _gameService.UpdateConnectionId(userId, Context.ConnectionId);
         if (previousConnection != Context.ConnectionId)
@@ -29,6 +57,8 @@ public class GameHub : Hub
 
     public async Task SendWebRtcSignal(string senderUserId, string targetUserId, string signalData)
     {
+        RequireIdentity(senderUserId);
+        if (signalData.Length > 32768 || !_gameService.GetSlots().Any(s => s.UserId == senderUserId) || !_gameService.GetSlots().Any(s => s.UserId == targetUserId)) return;
         var targetConnId = _gameService.GetConnectionIdByUserId(targetUserId);
         if (!string.IsNullOrEmpty(targetConnId))
         {
@@ -38,6 +68,7 @@ public class GameHub : Hub
 
     public async Task SendVoiceActivity(string userId, bool isSpeaking)
     {
+        RequireIdentity(userId);
         if (isSpeaking && !_gameService.CanUserSpeakNow(userId))
         {
             return;
@@ -47,12 +78,14 @@ public class GameHub : Hub
 
     public async Task UpdateNickname(string userId, string nickname)
     {
+        RequireIdentity(userId);
         _gameService.UpdateNickname(userId, nickname);
         await BroadcastStateToAllAsync();
     }
 
     public async Task TakeSlot(string userId, string nickname, int slotNumber)
     {
+        RequireIdentity(userId);
         var result = _gameService.TakeSlot(slotNumber, userId, nickname, Context.ConnectionId);
         if (!result.Success)
         {
@@ -65,18 +98,21 @@ public class GameHub : Hub
 
     public async Task LeaveSlot(string userId)
     {
+        RequireIdentity(userId);
         _gameService.LeaveSlot(userId);
         await BroadcastStateToAllAsync();
     }
 
     public async Task ToggleReady(string userId)
     {
+        RequireIdentity(userId);
         _gameService.ToggleReady(userId);
         await BroadcastStateToAllAsync();
     }
 
     public async Task StartGame()
     {
+        RequireHost();
         var res = _gameService.StartGame();
         if (!res.Success)
         {
@@ -89,6 +125,7 @@ public class GameHub : Hub
 
     public async Task NominatePlayer(string userId, int targetSlotNumber)
     {
+        RequireIdentity(userId);
         var res = _gameService.NominatePlayer(userId, targetSlotNumber);
         if (!res.Success)
         {
@@ -101,6 +138,7 @@ public class GameHub : Hub
 
     public async Task PassSpeech(string userId)
     {
+        RequireIdentity(userId);
         var res = _gameService.PassSpeech(userId);
         if (!res.Success)
         {
@@ -113,6 +151,7 @@ public class GameHub : Hub
 
     public async Task Vote(string userId, int candidateSlotNumber)
     {
+        RequireIdentity(userId);
         var res = _gameService.Vote(userId, candidateSlotNumber);
         if (!res.Success)
         {
@@ -126,6 +165,7 @@ public class GameHub : Hub
 
     public async Task NightAction(string userId, int targetSlotNumber)
     {
+        RequireIdentity(userId);
         var res = _gameService.NightAction(userId, targetSlotNumber);
         await Clients.Caller.SendAsync("OnNightActionResult", res.Message);
         await BroadcastStateToAllAsync();
@@ -133,6 +173,7 @@ public class GameHub : Hub
 
     public async Task DonCheck(string userId, int targetSlotNumber)
     {
+        RequireIdentity(userId);
         var res = _gameService.DonCheck(userId, targetSlotNumber);
         await Clients.Caller.SendAsync("OnNightActionResult", res.Message);
         await BroadcastStateToAllAsync();
@@ -140,19 +181,12 @@ public class GameHub : Hub
 
     public async Task AddFoul(int targetSlotNumber)
     {
-        var res = _gameService.AddFoul(targetSlotNumber);
-        if (res.Success)
-        {
-            await BroadcastStateToAllAsync();
-        }
-        else
-        {
-            await Clients.Caller.SendAsync("OnErrorNotification", res.Message);
-        }
+        await Clients.Caller.SendAsync("OnErrorNotification", "Ручная выдача фолов игроками отключена. Фолы начисляются автоматически по правилам игры (за выкрики).");
     }
 
     public async Task Shout(string userId)
     {
+        RequireIdentity(userId);
         var res = _gameService.Shout(userId);
         if (!res.Success)
         {
@@ -165,6 +199,7 @@ public class GameHub : Hub
 
     public async Task ConfigureTable(string configCode)
     {
+        RequireHost();
         var res = _gameService.ConfigureTable(configCode);
         if (!res.Success)
         {
@@ -182,6 +217,7 @@ public class GameHub : Hub
 
     public async Task ResetGame()
     {
+        RequireHost();
         _gameService.ResetGame();
         await BroadcastStateToAllAsync();
     }

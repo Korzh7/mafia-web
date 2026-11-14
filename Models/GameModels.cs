@@ -16,7 +16,9 @@ public enum GamePhase
     DayDiscussion,  // Дневная речь по очереди
     Voting,         // Голосование по кандидатам
     Night,          // Обычная ночь (стрельба и проверки)
-    GameOver        // Окончание игры
+    GameOver = 5,
+    TieDiscussion = 6,
+    GroupVoting = 7
 }
 
 public enum GameWinner

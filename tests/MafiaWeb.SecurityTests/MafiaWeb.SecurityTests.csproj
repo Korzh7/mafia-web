@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Using Include="Microsoft.Extensions.Logging" />
+    <Compile Include="../../Hubs/GameHub.cs" Link="Source/GameHub.cs" />
+    <Compile Include="../../Services/GameRoomService.cs" Link="Source/GameRoomService.cs" />
+    <Compile Include="../../Models/**/*.cs" Link="Source/Models/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

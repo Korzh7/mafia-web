@@ -13,6 +13,12 @@ public class GameRoomService
     private readonly Dictionary<int, string> _sheriffChecks = new(); // slot -> "Красный"/"Черный"
     private readonly Dictionary<int, string> _donChecks = new();     // slot -> "Шериф"/"Не шериф"
 
+    public string? HostUserId { get; private set; }
+    private int _votingRound;
+    private readonly List<int> _tieCandidates = new();
+    private readonly HashSet<int> _tieSpoken = new();
+    private readonly Dictionary<int, bool> _groupVotes = new();
+    private bool IsLive(int n) => _slots.Any(s => s.SlotNumber == n && s.IsAlive && !string.IsNullOrEmpty(s.UserId));
     public GamePhase Phase { get; private set; } = GamePhase.Lobby;
     public int DayNumber { get; private set; } = 0;
     public int SecondsLeft { get; private set; } = 0;
@@ -174,10 +180,10 @@ public class GameRoomService
             if (_activeShoutSlotNumber == slot.SlotNumber && _activeShoutSecondsLeft > 0)
                 return true;
 
-            if (Phase is GamePhase.Lobby or GamePhase.Voting or GamePhase.GameOver)
+            if (Phase is GamePhase.Lobby or GamePhase.Voting or GamePhase.GroupVoting or GamePhase.GameOver)
                 return true;
 
-            if (Phase == GamePhase.DayDiscussion)
+            if (Phase is GamePhase.DayDiscussion or GamePhase.TieDiscussion)
             {
                 if (slot.SlotNumber == CurrentSpeakerSlot)
                 {
@@ -228,6 +234,7 @@ public class GameRoomService
                 oldSlot.IsReady = false;
             }
 
+            HostUserId ??= userId;
             slot.UserId = userId;
             slot.Nickname = nickname;
             slot.ConnectionId = connectionId;
@@ -259,6 +266,7 @@ public class GameRoomService
             slot.ConnectionId = null;
             slot.IsReady = false;
 
+            if (HostUserId == userId) HostUserId = _slots.FirstOrDefault(s => !string.IsNullOrEmpty(s.UserId))?.UserId;
             AddEvent($"{nick} освободил место #{num}.", "info");
             return (true, "Вы встали из-за стола.");
         }
@@ -289,8 +297,13 @@ public class GameRoomService
             if (occupied.Count < requiredPlayers)
                 return (false, $"Для запуска нужно хотя бы {requiredPlayers} игрока (сейчас занято {occupied.Count}).");
 
+            if (occupied.Any(s => !s.IsReady)) return (false, "Все занявшие места игроки должны нажать «Готов».");
             DistributeRoles(occupied);
 
+            _votingRound = 0;
+            _tieCandidates.Clear();
+            _tieSpoken.Clear();
+            _groupVotes.Clear();
             _nominatedSlots.Clear();
             _sheriffChecks.Clear();
             _donChecks.Clear();
@@ -454,7 +467,7 @@ public class GameRoomService
     {
         lock (_lock)
         {
-            if (Phase != GamePhase.DayDiscussion)
+            if (Phase is not (GamePhase.DayDiscussion or GamePhase.TieDiscussion))
                 return (false, "Сейчас нет фазы речи.");
 
             var actor = _slots.FirstOrDefault(s => s.UserId == userId);
@@ -462,7 +475,7 @@ public class GameRoomService
                 return (false, "Сейчас говорит другой игрок.");
 
             // Передаем ход следующему
-            NextSpeakerOrVote();
+            if (Phase == GamePhase.TieDiscussion) NextTieSpeaker(); else NextSpeakerOrVote();
             return (true, "Речь завершена.");
         }
     }
@@ -478,7 +491,7 @@ public class GameRoomService
             if (voter == null || !voter.IsAlive)
                 return (false, "Вы не можете голосовать.");
 
-            if (!_nominatedSlots.Contains(candidateSlotNumber))
+            if (!_nominatedSlots.Contains(candidateSlotNumber) || !IsLive(candidateSlotNumber))
                 return (false, "Этот игрок не выставлен на голосование.");
 
             voter.VotedForSlot = candidateSlotNumber;
@@ -607,15 +620,15 @@ public class GameRoomService
                     _activeShoutSecondsLeft = 0;
                 }
                 AddEvent($"Игрок #{targetSlotNumber} ({target.Nickname}) получил 4-й фол и дисквалифицирован из-за стола!", "death");
-                CheckGameOver();
+                HandleDisqualification(targetSlotNumber);
                 return (true, $"Игрок #{targetSlotNumber} дисквалифицирован за 4 фола.");
             }
 
             if (target.Fouls == 3)
             {
                 target.LosesNextSpeech = true;
-                AddEvent($"Игроку #{targetSlotNumber} ({target.Nickname}) вынесен 3-й фол! Игрок ЛИШАЕТСЯ следующей речи.", "alert");
-                return (true, $"3-й фол назначен игроку #{targetSlotNumber}. Игрок лишен слова на свой следующий ход.");
+                AddEvent($"Игрок #{targetSlotNumber}: третий фол, следующая речь пропускается.", "alert");
+                return (true, "Назначен третий фол: одна речь пропускается.");
             }
 
             AddEvent($"Игроку #{targetSlotNumber} ({target.Nickname}) вынесено замечание (фол {target.Fouls}/4).", "alert");
@@ -657,7 +670,7 @@ public class GameRoomService
                 _activeShoutSlotNumber = null;
                 _activeShoutSecondsLeft = 0;
                 AddEvent($"Игрок #{actor.SlotNumber} ({actor.Nickname}) совершил выкрик и получил 4-й фол — дисквалифицирован из игры!", "death");
-                CheckGameOver();
+                HandleDisqualification(actor.SlotNumber);
                 return (true, "4-й фол: вы дисквалифицированы из-за стола.");
             }
 
@@ -699,7 +712,7 @@ public class GameRoomService
             if (SecondsLeft > 0)
             {
                 SecondsLeft--;
-                return prevShoutSlot != _activeShoutSlotNumber;
+                if (SecondsLeft > 0) return prevShoutSlot != _activeShoutSlotNumber;
             }
 
             // Таймер истек — переключаем фазы
@@ -715,6 +728,12 @@ public class GameRoomService
                     NextSpeakerOrVote();
                     break;
 
+                case GamePhase.TieDiscussion:
+                    NextTieSpeaker();
+                    break;
+                case GamePhase.GroupVoting:
+                    FinishGroupVoting();
+                    break;
                 case GamePhase.Voting:
                     // Голосование завершилось — подсчитываем голоса
                     FinishVoting();
@@ -732,6 +751,10 @@ public class GameRoomService
 
     private void StartDay(int dayNum)
     {
+        _votingRound = 0;
+        _tieCandidates.Clear();
+        _tieSpoken.Clear();
+        _groupVotes.Clear();
         DayNumber = dayNum;
         Phase = GamePhase.DayDiscussion;
         _nominatedSlots.Clear();
@@ -758,8 +781,9 @@ public class GameRoomService
         if (speaker.LosesNextSpeech)
         {
             speaker.LosesNextSpeech = false;
-            SecondsLeft = 4;
+
             AddEvent($"🔇 Игрок #{speaker.SlotNumber} ({speaker.Nickname}) ЛИШЁН СЛОВА за 3-й выкрик/фол и пропускает свою речь!", "alert");
+            NextSpeakerOrVote();
         }
         else
         {
@@ -809,6 +833,7 @@ public class GameRoomService
             if (nextIdx < 0) nextIdx = 0;
         }
 
+        while (_spokenSlotsThisDay.Contains(alive[nextIdx].SlotNumber)) nextIdx = (nextIdx + 1) % alive.Count;
         CurrentSpeakerSlot = alive[nextIdx].SlotNumber;
         _speakerNominatedThisTurn = false;
         _activeShoutSlotNumber = null;
@@ -818,8 +843,9 @@ public class GameRoomService
         if (speaker.LosesNextSpeech)
         {
             speaker.LosesNextSpeech = false;
-            SecondsLeft = 4;
+
             AddEvent($"🔇 Игрок #{speaker.SlotNumber} ({speaker.Nickname}) ЛИШЁН СЛОВА за 3-й выкрик/фол и пропускает свою речь!", "alert");
+            NextSpeakerOrVote();
         }
         else
         {
@@ -830,80 +856,129 @@ public class GameRoomService
 
     private void StartVoting()
     {
+        _activeShoutSlotNumber = null;
+        _activeShoutSecondsLeft = 0;
         CurrentSpeakerSlot = null;
-        
-        // Очищаем предыдущие голоса
-        foreach (var s in _slots) s.VotedForSlot = null;
-
-        if (_nominatedSlots.Count == 0)
+        _nominatedSlots.RemoveAll(n => !IsLive(n));
+        foreach (var slot in _slots) slot.VotedForSlot = null;
+        if (_nominatedSlots.Count < 2)
         {
-            AddEvent("Ни один кандидат не был выставлен на голосование. Город засыпает без суда.", "info");
-            StartNight();
-            return;
+            AddEvent($"Выставлено меньше двух кандидатов: голосование и исключение не проводятся.", "info");
+            StartNight(); return;
         }
-
-        if (_nominatedSlots.Count == 1)
-        {
-            // В первый день при одном кандидате голосование часто не проводится (правило классики)
-            if (DayNumber == 1)
-            {
-                AddEvent($"Выставлен только Игрок #{_nominatedSlots[0]}. В первый день голосование не проводится. Город засыпает.", "info");
-                StartNight();
-                return;
-            }
-        }
-
+        if (_votingRound == 0) _votingRound = 1;
         Phase = GamePhase.Voting;
-        SecondsLeft = 15; // 15 секунд на клик по кандидату
-        AddEvent($"Начинается голосование! Кандидаты: {string.Join(", ", _nominatedSlots.Select(n => $"#{n}"))}. У вас 15 секунд.", "alert");
+        SecondsLeft = 15;
+        AddEvent($"Голосование, круг {_votingRound}: неподанные голоса уходят последнему кандидату.", "info");
     }
 
     private void FinishVoting()
     {
-        var votesCount = new Dictionary<int, int>();
-        foreach (var slotNum in _nominatedSlots)
-            votesCount[slotNum] = 0;
-
-        var aliveVoters = _slots.Where(s => s.IsAlive && !string.IsNullOrEmpty(s.UserId)).ToList();
-        foreach (var voter in aliveVoters)
+        _nominatedSlots.RemoveAll(n => !IsLive(n));
+        if (_nominatedSlots.Count < 2) { StartNight(); return; }
+        var counts = _nominatedSlots.ToDictionary(n => n, _ => 0);
+        foreach (var voter in _slots.Where(s => IsLive(s.SlotNumber)))
         {
-            if (voter.VotedForSlot.HasValue && votesCount.ContainsKey(voter.VotedForSlot.Value))
-            {
-                votesCount[voter.VotedForSlot.Value]++;
-                AddEvent($"Игрок #{voter.SlotNumber} ({voter.Nickname}) проголосовал против #{voter.VotedForSlot.Value}.", "info");
-            }
-            else
-            {
-                AddEvent($"Игрок #{voter.SlotNumber} ({voter.Nickname}) воздержался/не успел проголосовать.", "info");
-            }
+            int choice = voter.VotedForSlot is int n && counts.ContainsKey(n) ? n : _nominatedSlots[^1];
+            voter.VotedForSlot = choice;
+            counts[choice]++;
+            AddEvent($"Игрок #{voter.SlotNumber} голосует против #{choice}.", "info");
         }
-
-        int maxVotes = votesCount.Values.DefaultIfEmpty(0).Max();
-        var leaders = votesCount.Where(kv => kv.Value == maxVotes && maxVotes > 0).Select(kv => kv.Key).ToList();
-
+        int max = counts.Values.Max();
+        var leaders = _nominatedSlots.Where(n => counts[n] == max).ToList();
         if (leaders.Count == 1)
         {
-            int eliminatedSlot = leaders[0];
-            var eliminated = _slots[eliminatedSlot - 1];
-            eliminated.IsAlive = false;
-            AddEvent($"Большинством голосов ({maxVotes}) город изгоняет Игрока #{eliminatedSlot} ({eliminated.Nickname})!", "death");
-
-            if (CheckGameOver()) return;
+            _slots[leaders[0] - 1].IsAlive = false;
+            AddEvent($"Игрок #{leaders[0]} исключён ({max} голосов).", "info");
+            if (!CheckGameOver()) StartNight();
+            return;
         }
-        else if (leaders.Count > 1)
+        _tieCandidates.Clear(); _tieCandidates.AddRange(leaders);
+        CurrentSpeakerSlot = null;
+        if (_votingRound == 1)
         {
-            AddEvent($"Голоса разделились поровну между игроками: {string.Join(", ", leaders.Select(l => $"#{l}"))}. Никто не покидает город (автокатастрофа)!", "alert");
+            _tieSpoken.Clear(); Phase = GamePhase.TieDiscussion;
+            AddEvent($"Ничья: каждому кандидату предоставляется 30 секунд, затем повторное голосование.", "info");
+            NextTieSpeaker();
         }
         else
         {
-            AddEvent("Никто не проголосовал. Город никого не изгоняет.", "info");
+            Phase = GamePhase.GroupVoting; SecondsLeft = 15; _groupVotes.Clear();
+            AddEvent($"Повторная ничья: голосование за подъём всей группы. Требуется строгое большинство всех живых игроков.", "info");
         }
+    }
 
+    private void NextTieSpeaker()
+    {
+        if (CurrentSpeakerSlot is int previous) _tieSpoken.Add(previous);
+        while (true)
+        {
+            int next = _tieCandidates.FirstOrDefault(n => IsLive(n) && !_tieSpoken.Contains(n));
+            if (next == 0)
+            {
+                _nominatedSlots.Clear(); _nominatedSlots.AddRange(_tieCandidates.Where(IsLive));
+                _votingRound = 2; StartVoting(); return;
+            }
+            CurrentSpeakerSlot = next;
+            var speaker = _slots[next - 1];
+            if (speaker.LosesNextSpeech)
+            {
+                speaker.LosesNextSpeech = false; _tieSpoken.Add(next);
+                AddEvent($"Игрок #{next}: речь пропущена за третий фол.", "info");
+                continue;
+            }
+            SecondsLeft = 30;
+            AddEvent($"Игрок #{next}: дополнительная речь, 30 секунд.", "info");
+            return;
+        }
+    }
+
+    public (bool Success, string Message) VoteGroup(string userId, bool support)
+    {
+        lock (_lock)
+        {
+            var voter = _slots.FirstOrDefault(s => s.UserId == userId && s.IsAlive);
+            if (Phase != GamePhase.GroupVoting || voter == null) return (false, "Голосование за подъём группы недоступно.");
+            _groupVotes[voter.SlotNumber] = support;
+            return (true, "Голос принят.");
+        }
+    }
+
+    private void FinishGroupVoting()
+    {
+        int alive = _slots.Count(s => IsLive(s.SlotNumber));
+        int support = _groupVotes.Count(v => IsLive(v.Key) && v.Value);
+        if (support > alive / 2)
+        {
+            foreach (int n in _tieCandidates.Where(IsLive).ToList())
+            {
+                _slots[n - 1].IsAlive = false;
+                AddEvent($"Игрок #{n} исключён вместе с группой.", "info");
+            }
+            if (CheckGameOver()) return;
+        }
+        else AddEvent($"Группа остаётся: строгое большинство всех живых не поддержало подъём.", "info");
         StartNight();
+    }
+
+    private void HandleDisqualification(int number)
+    {
+        _nominatedSlots.Remove(number); _tieCandidates.Remove(number); _groupVotes.Remove(number);
+        _slots[number - 1].VotedForSlot = null;
+        foreach (var slot in _slots.Where(s => s.VotedForSlot == number)) slot.VotedForSlot = null;
+        if (CheckGameOver()) return;
+        if (CurrentSpeakerSlot == number)
+        {
+            if (Phase == GamePhase.DayDiscussion) NextSpeakerOrVote();
+            else if (Phase == GamePhase.TieDiscussion) NextTieSpeaker();
+        }
+        if (Phase == GamePhase.Voting && _nominatedSlots.Count < 2) StartNight();
     }
 
     private void StartNight()
     {
+        _activeShoutSlotNumber = null;
+        _activeShoutSecondsLeft = 0;
         Phase = GamePhase.Night;
         SecondsLeft = 35; // 35 секунд на стрельбу и проверки
         CurrentSpeakerSlot = null;
@@ -1013,6 +1088,10 @@ public class GameRoomService
             SecondsLeft = 0;
             CurrentSpeakerSlot = null;
             Winner = GameWinner.None;
+            _votingRound = 0;
+            _tieCandidates.Clear();
+            _tieSpoken.Clear();
+            _groupVotes.Clear();
             _nominatedSlots.Clear();
             _sheriffChecks.Clear();
             _donChecks.Clear();
@@ -1049,7 +1128,7 @@ public class GameRoomService
     {
         lock (_lock)
         {
-            var mySlot = _slots.FirstOrDefault(s => s.UserId == userId);
+            var mySlot = string.IsNullOrEmpty(userId) ? null : _slots.FirstOrDefault(s => s.UserId == userId);
             bool isMeMafia = mySlot?.Role is PlayerRole.Mafia or PlayerRole.Don;
             bool isGameOver = Phase == GamePhase.GameOver;
 
@@ -1099,6 +1178,8 @@ public class GameRoomService
                 GamePhase.Lobby => "Лобби (Ожидание игроков)",
                 GamePhase.NightZero => "Нулевая ночь (Договорка мафии)",
                 GamePhase.DayDiscussion => $"День {DayNumber} (Обсуждение)",
+                GamePhase.TieDiscussion => "Дополнительные речи",
+                GamePhase.GroupVoting => "Голосование за подъём группы",
                 GamePhase.Voting => $"День {DayNumber} (Голосование)",
                 GamePhase.Night => $"Ночь {DayNumber} (Стрельба и проверки)",
                 GamePhase.GameOver => "Игра окончена",
@@ -1112,6 +1193,8 @@ public class GameRoomService
                 GamePhase.DayDiscussion => CurrentSpeakerSlot.HasValue 
                     ? $"Говорит Игрок #{CurrentSpeakerSlot.Value} ({_slots[CurrentSpeakerSlot.Value - 1].Nickname})."
                     : "Обсуждение.",
+                GamePhase.TieDiscussion => $"Игрок #{CurrentSpeakerSlot}: 30 секунд.",
+                GamePhase.GroupVoting => "Голосование за подъём всех оставшихся в ничьей; воздержание считается против.",
                 GamePhase.Voting => "Выберите кандидата, против которого хотите отдать свой голос.",
                 GamePhase.Night => "Мафия стреляет по общей цели. Шериф и Дон совершают ночные проверки.",
                 GamePhase.GameOver => Winner switch
@@ -1129,6 +1212,13 @@ public class GameRoomService
 
             return new PublicGameStateDto
             {
+                HostUserId = HostUserId,
+                VotingRound = _votingRound,
+                TieCandidateSlots = _tieCandidates.ToList(),
+                GroupVotesFor = _groupVotes.Count(v => IsLive(v.Key) && v.Value),
+                GroupVotesAgainst = _slots.Count(s => IsLive(s.SlotNumber)) - _groupVotes.Count(v => IsLive(v.Key) && v.Value),
+                CanGroupVoteNow = Phase == GamePhase.GroupVoting && mySlot?.IsAlive == true,
+                MyGroupVote = mySlot != null && _groupVotes.TryGetValue(mySlot.SlotNumber, out var groupVote) ? groupVote : null,
                 Phase = Phase,
                 PhaseTitle = phaseTitle,
                 PhaseDescription = phaseDesc,
@@ -1165,7 +1255,7 @@ public class GameRoomService
                 KnownChecks = (mySlot?.Role == PlayerRole.Sheriff) ? new Dictionary<int, string>(_sheriffChecks) :
                               (mySlot?.Role == PlayerRole.Don) ? new Dictionary<int, string>(_donChecks) : new(),
                 MyNightTargetSlot = mySlot?.NightTargetSlot,
-                AliveMafiaCount = aliveMafiaCount,
+                AliveMafiaCount = (isMeMafia || isGameOver) ? aliveMafiaCount : 0,
                 MaxSlots = MaxSlots,
                 RoomConfigCode = RoomConfigCode,
                 ActiveShoutSlotNumber = _activeShoutSlotNumber,

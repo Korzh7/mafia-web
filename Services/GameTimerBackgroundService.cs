@@ -36,12 +36,10 @@ public class GameTimerBackgroundService : BackgroundService
                 {
                     // Оповещаем клиентов
                     await _hubContext.Clients.All.SendAsync("OnTimerTick", _gameService.SecondsLeft, stoppingToken);
-
-                    if (stateChanged)
-                    {
-                        await BroadcastGameStateAsync(stoppingToken);
-                    }
                 }
+
+                // Include the final transition to GameOver, not only active phases.
+                if (stateChanged) await BroadcastGameStateAsync(stoppingToken);
             }
             catch (OperationCanceledException)
             {
