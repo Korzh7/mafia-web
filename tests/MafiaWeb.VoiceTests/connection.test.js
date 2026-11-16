@@ -105,3 +105,37 @@ test('watchdog negotiates peers stuck without a connection', async () => {
   await new Promise((r) => setTimeout(r, 0));
   expect(sent.filter((s) => s.method === 'SendWebRtcSignal').length).toBeGreaterThanOrEqual(1);
 });
+
+test('answerer never introduces a second audio transceiver', async () => {
+  const { engine } = loadEngine('z');
+  engine.localStream = { getAudioTracks: () => [{ kind: 'audio', enabled: true }], getTracks: () => [] };
+  engine.createPeerConnection('a', 'z');
+  const peer = engine.peers.get('a');
+  expect(peer.pc.transceivers.length).toBe(0);
+  await engine.handleSignal('a', JSON.stringify({ type: 'offer', sdp: { type: 'offer' } }));
+  expect(peer.pc.transceivers.length).toBe(1);
+  expect(peer.pc.signalingState).toBe('stable');
+});
+
+test('glare: higher id rolls back its own offer and answers the incoming one', async () => {
+  const { engine } = loadEngine('z');
+  engine.localStream = { getAudioTracks: () => [{ kind: 'audio', enabled: true }], getTracks: () => [] };
+  engine.createPeerConnection('a', 'z'); // 'z' > 'a' -> this side yields
+  const peer = engine.peers.get('a');
+  await peer.pc.setLocalDescription({ type: 'offer' }); // simulate our pending offer
+  expect(peer.pc.signalingState).toBe('have-local-offer');
+  await engine.processSignal('a', JSON.stringify({ type: 'offer', sdp: { type: 'offer' } }));
+  expect(peer.pc.signalingState).toBe('stable');
+  expect(peer.pc.remoteDescription.type).toBe('offer');
+});
+
+test('glare: lower id keeps its offer and ignores the incoming one', async () => {
+  const { engine } = loadEngine('a');
+  engine.localStream = { getAudioTracks: () => [{ kind: 'audio', enabled: true }], getTracks: () => [] };
+  engine.createPeerConnection('z', 'a'); // 'a' < 'z' -> keeps its own offer
+  const peer = engine.peers.get('z');
+  await peer.pc.setLocalDescription({ type: 'offer' });
+  await engine.processSignal('z', JSON.stringify({ type: 'offer', sdp: { type: 'offer' } }));
+  expect(peer.pc.signalingState).toBe('have-local-offer');
+  expect(peer.pc.remoteDescription).toBeNull();
+});

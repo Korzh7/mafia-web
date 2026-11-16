@@ -603,11 +603,12 @@ class MafiaVoiceEngine {
 
     this.peers.delete(peerUserId);
     const created = this.createPeerConnection(peerUserId, window.myUserId);
-    // Negotiate even from the side that would normally be the answerer: the
-    // other participant waits for an offer and otherwise stays in P2P forever.
-    if (created) {
+    // Only the lower id opens the negotiation. The other side answers; if it
+    // also sent an offer both peers would end up in an unrecoverable glare.
+    if (created && window.myUserId < peerUserId) {
       this.renegotiatePeer(peerUserId, created.pc);
     }
+    return created;
   }
 
   // Repair pairs whose initial offer/answer was lost (for example a peer
@@ -620,12 +621,18 @@ class MafiaVoiceEngine {
       if (!signalingReady) return;
       this.peers.forEach((peer, peerUserId) => {
         const pc = peer.pc;
+        // Only the designated initiator repairs a pair; the other side must
+        // never race it with a second offer.
+        if (window.myUserId >= peerUserId) return;
         if (!pc || pc.signalingState !== 'stable' || peer.isConnected) return;
         if (pc.connectionState === 'connected') { peer.isConnected = true; return; }
         const now = Date.now();
-        if (peer.lastNegotiationRequest && now - peer.lastNegotiationRequest < 6000) return;
+        // Exponential backoff: 5s, 10s, 20s, then every 30s.
+        peer.watchdogAttempts = (peer.watchdogAttempts || 0) + 1;
+        const wait = Math.min(5000 * Math.pow(2, peer.watchdogAttempts - 1), 30000);
+        if (peer.lastNegotiationRequest && now - peer.lastNegotiationRequest < wait) return;
         peer.lastNegotiationRequest = now;
-        console.log(`[WebRTC] Повторная попытка соединения с ${peerUserId}`);
+        console.log(`[WebRTC] Повторная попытка соединения с ${peerUserId} (${peer.watchdogAttempts})`);
         this.renegotiatePeer(peerUserId, pc);
       });
     }, 5000);
@@ -678,16 +685,35 @@ class MafiaVoiceEngine {
       const pc = peer.pc;
 
       if (data.type === 'offer') {
-        if (pc.signalingState !== 'stable') {
-          console.warn(`[WebRTC] Glare с ${senderUserId}. Состояние:`, pc.signalingState);
+        // Glare: both sides offered at once. Only the side with the higher id
+        // yields by rolling back its own pending offer; the lower id keeps
+        // its offer and ignores the incoming one, the peer will resend it
+        // after it receives our answer.
+        if (pc.signalingState === 'have-local-offer') {
           if (window.myUserId > senderUserId) {
-            await pc.setLocalDescription({ type: "rollback" }).catch(() => {});
+            console.warn(`[WebRTC] Glare с ${senderUserId}: откат своего предложения`);
+            try {
+              await pc.setLocalDescription({ type: 'rollback' });
+            } catch (e) {
+              console.warn('[WebRTC] Откат не удался, пересоздаём соединение:', e);
+              this.reconnectPeer(senderUserId);
+              return;
+            }
           } else {
+            console.warn(`[WebRTC] Glare с ${senderUserId}: игнорируем чужое предложение`);
             return;
           }
         }
 
+        if (pc.signalingState !== 'stable') {
+          console.warn(`[WebRTC] Пропуск offer в состоянии ${pc.signalingState} от ${senderUserId}`);
+          return;
+        }
+
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        if (!peer.transceiver) {
+          peer.transceiver = pc.getTransceivers().find(t => t.receiver?.track?.kind === 'audio');
+        }
         // Keep the direction negotiated by the offer. Switching it to sendrecv
         // mid-call would require another offer/answer round and, if it never
         // arrives, audio flows only in one direction.
@@ -735,7 +761,17 @@ class MafiaVoiceEngine {
         }
       }
     } catch (err) {
-      console.error("[WebRTC] Ошибка в handleSignal:", err);
+      console.error("[WebRTC] Ошибка обработки сигнала:", err);
+      // A failed offer/answer leaves this pair unusable forever. Recreate the
+      // connection instead of silently retrying against a broken session.
+      if (err && (err.name === 'InvalidAccessError' || err.name === 'InvalidStateError' ||
+          err.name === 'OperationError')) {
+        const stale = this.peers.get(senderUserId);
+        if (stale && Date.now() - (stale.lastReconnect || 0) > 10000) {
+          stale.lastReconnect = Date.now();
+          this.reconnectPeer(senderUserId);
+        }
+      }
     }
   }
 
