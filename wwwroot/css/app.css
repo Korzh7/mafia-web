@@ -87,6 +87,10 @@ body {
   display: inline-block;
 }
 
+.mic-device-control { display:flex; align-items:center; gap:6px; color:var(--text-muted); font-size:.8rem; }
+.mic-device-control select { max-width:180px; background:#1e293b; color:#fff; border:1px solid #475569; border-radius:6px; padding:5px 6px; }
+@media (max-width:960px) { .nav-actions { flex-wrap:wrap; gap:8px; } .mic-device-control { order:5; width:100%; } .mic-device-control select { flex:1; max-width:none; } }
+
 /* Главная сцена игры */
 .game-container {
   display: flex;

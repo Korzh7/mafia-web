@@ -226,6 +226,9 @@ function setupEventListeners() {
     });
   }
 
+  const micSelect = document.getElementById('micDeviceSelect');
+  if (micSelect) micSelect.addEventListener('change', e => window.mafiaVoice?.selectMicrophone(e.target.value));
+
   const btnChangeNick = document.getElementById('btnChangeNick');
   if (btnChangeNick) {
     btnChangeNick.addEventListener('click', () => {
@@ -367,6 +370,29 @@ function updateUI(state) {
   }
 }
 
+// Обновляет только индикаторы голосовой связи, не пересобирая карточки мест:
+// перерисовка во время разговора отнимала бы браузерные вызовы у WebRTC.
+function refreshVoiceIndicators(state) {
+  if (!state || !elSeatsGrid) return;
+  state.slots.forEach(slot => {
+    if (!slot.isOccupied || !slot.userId) return;
+    const indicator = elSeatsGrid.querySelector(`[data-voice-user-id="${CSS.escape(slot.userId)}"]`);
+    if (!indicator) return;
+    if (slot.userId === myUserId) {
+      const micActive = window.mafiaVoice && window.mafiaVoice.isMicEnabled && !window.mafiaVoice.userMutedMic;
+      indicator.innerHTML = micActive
+        ? '<span style="color:#22c55e;">●</span> Микрофон активен'
+        : '<span style="color:#ef4444;">●</span> Микрофон выключен';
+      return;
+    }
+    const peer = window.mafiaVoice?.peers?.get(slot.userId);
+    indicator.innerHTML = peer && peer.isConnected
+      ? '<span style="color:#22c55e;">●</span> Связь установлена'
+      : '<span style="color:#eab308;">○</span> Подключение P2P...';
+  });
+}
+window.refreshVoiceIndicators = refreshVoiceIndicators;
+
 function renderSeats(state) {
   if (!elSeatsGrid) return;
   elSeatsGrid.innerHTML = '';
@@ -438,10 +464,11 @@ function renderSeats(state) {
       } else {
         const peer = window.mafiaVoice?.peers?.get(slot.userId);
         const isConnected = peer && peer.isConnected;
-        voiceIndicator.innerHTML = isConnected 
-          ? '<span style="color:#22c55e;">●</span> Связь установлена' 
+        voiceIndicator.innerHTML = isConnected
+          ? '<span style="color:#22c55e;">●</span> Связь установлена'
           : '<span style="color:#eab308;">○</span> Подключение P2P...';
       }
+      voiceIndicator.setAttribute('data-voice-user-id', slot.userId || '');
       playerArea.appendChild(voiceIndicator);
     }
 

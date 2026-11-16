@@ -14,6 +14,13 @@ class MafiaVoiceEngine {
     this.analyser = null;
     this.isMicEnabled = false;
     this.isEchoTesting = false;
+    this.captureInFlight = null;
+    this.selectedDeviceId = null;
+    this.deviceStorageKey = 'mafia_microphone_device';
+    this.analysisTimer = null;
+    this.analysisSource = null;
+    this.echoTimer = null;
+    this.echoSource = null;
 
     // Пользовательские переключатели (персистентные, не сбрасываются игрой!)
     this.userMutedMic = false;   // Пользователь сам нажал "Заглушить микрофон"
@@ -38,6 +45,7 @@ class MafiaVoiceEngine {
     this.lastSpeakingState = false;
     this.configurationReady = Promise.resolve();
     this.setupGlobalUnlockListeners();
+    this.initDeviceSelection();
   }
 
   loadConfiguration() {
@@ -51,6 +59,7 @@ class MafiaVoiceEngine {
         if (!config.hasTurn) console.warn('[WebRTC] TURN is not configured: some networks cannot connect.');
       })
       .catch(error => console.warn('[WebRTC] Using default STUN configuration:', error));
+    this.startConnectionWatchdog();
     return this.configurationReady;
   }
 
@@ -65,53 +74,147 @@ class MafiaVoiceEngine {
     });
   }
 
-  // Запрос доступа к микрофону
+  // Ensure capture for existing callers; explicit selection always requests a switch.
   async enableMicrophone() {
-    if (this.isMicEnabled && this.localStream) {
-      return true;
-    }
+    if (this.captureInFlight) return this.captureInFlight;
+    if (this.isMicEnabled && this.localStream) return true;
+    return this.queueMicrophoneCapture(this.selectedDeviceId, true);
+  }
 
+  async selectMicrophone(id) {
+    return this.queueMicrophoneCapture(id || null, false);
+  }
+
+  queueMicrophoneCapture(deviceId, allowFallback) {
+    const previous = this.captureInFlight;
+    const operation = (async () => {
+      if (previous) await previous;
+      return this._captureMicrophone(deviceId, allowFallback);
+    })();
+    this.captureInFlight = operation;
+    this.updateDeviceControls();
+    return operation.finally(() => {
+      if (this.captureInFlight === operation) this.captureInFlight = null;
+      this.updateDeviceControls();
+    });
+  }
+
+  async _captureMicrophone(deviceId, allowFallback) {
+    let stream;
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        },
-        video: false
-      });
-
-      this.isMicEnabled = true;
-      this.userMutedMic = false;
-      this.setupAudioAnalysis();
-      this.unlockAllAudio();
-      console.log("[WebRTC] Микрофон успешно получен");
-
-      const myTrack = this.localStream.getAudioTracks()[0];
-
-      // Подключаем полученный трек ко всем активным пирам
-      this.peers.forEach((peer) => {
-        try {
-          const sender = peer.sender || (peer.pc.getSenders() && peer.pc.getSenders()[0]);
-          if (sender && myTrack) {
-            sender.replaceTrack(myTrack).catch(err => console.warn("[WebRTC] replaceTrack error in enableMicrophone:", err));
-          }
-        } catch (e) {}
-      });
-
-      if (window.currentGameState) {
-        this.applyPhaseVoiceRules(window.currentGameState);
+      const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+      if (deviceId) audio.deviceId = { exact: deviceId };
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
+      } catch (error) {
+        if (!allowFallback || !deviceId || !['NotFoundError', 'OverconstrainedError'].includes(error.name)) throw error;
+        deviceId = null;
+        delete audio.deviceId;
+        stream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
       }
-
+      this.hasMicrophonePermission = true;
+      const track = stream.getAudioTracks()[0];
+      if (!track) throw new Error('Микрофон не найден');
+      track.enabled = false; // Never transmit before phase/mute rules are applied.
+      const changed = [];
+      try {
+        for (const peer of this.peers.values()) {
+          const sender = peer.sender || peer.pc?.getSenders?.().find(s => s.track?.kind === 'audio');
+          if (!sender) continue;
+          const previousTrack = sender.track;
+          // A null sender is deliberately detached (night/privacy).
+          await sender.replaceTrack(previousTrack === null ? null : track);
+          changed.push({ sender, previousTrack });
+        }
+      } catch (error) {
+        for (const { sender, previousTrack } of changed.reverse()) {
+          try { await sender.replaceTrack(previousTrack); } catch (rollbackError) {
+            console.warn('[WebRTC] Microphone rollback failed:', rollbackError);
+          }
+        }
+        throw error;
+      }
+      const oldStream = this.localStream;
+      this.stopAudioAnalysis();
+      this.stopEchoTest();
+      this.localStream = stream;
+      this.isMicEnabled = true;
+      this.selectedDeviceId = deviceId || null; // Preference, not the resolved default device ID.
+      this.persistSelectedDevice();
+      this.applyPhaseVoiceRules(window.currentGameState);
+      this.setupAudioAnalysis();
+      oldStream?.getTracks().forEach(oldTrack => oldTrack.stop());
+      this.setDeviceStatus('');
       this.updateNavbarButtons();
+      await this.refreshAudioDevices(false);
       return true;
-    } catch (err) {
-      console.warn("[WebRTC] Ожидание разрешения пользователя на использование микрофона:", err);
+    } catch (error) {
+      stream?.getTracks().forEach(track => track.stop());
+      this.setDeviceStatus('Ошибка выбора микрофона. Предыдущий выбор сохранён.');
+      const select = document.getElementById('micDeviceSelect');
+      if (select) select.value = this.selectedDeviceId || '';
       this.updateNavbarButtons();
       return false;
     }
   }
 
+  initDeviceSelection() {
+    try { this.selectedDeviceId = localStorage.getItem(this.deviceStorageKey) || null; } catch (_) {}
+    const devices = navigator.mediaDevices;
+    if (!devices?.enumerateDevices) return;
+    devices.addEventListener?.('devicechange', () => this.refreshAudioDevices(true));
+    this.refreshAudioDevices(false);
+  }
+
+  persistSelectedDevice() {
+    try {
+      if (this.selectedDeviceId) localStorage.setItem(this.deviceStorageKey, this.selectedDeviceId);
+      else localStorage.removeItem(this.deviceStorageKey);
+    } catch (_) {}
+  }
+
+  setDeviceStatus(text) {
+    const status = document.getElementById('micDeviceStatus');
+    if (status) status.textContent = text || '';
+  }
+
+  updateDeviceControls() {
+    const select = document.getElementById('micDeviceSelect');
+    const echo = document.getElementById('btnEchoTest');
+    if (select) select.disabled = !!this.captureInFlight;
+    if (echo) echo.disabled = !!this.captureInFlight;
+  }
+
+  async refreshAudioDevices(handleRemoval = true) {
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+      const select = document.getElementById('micDeviceSelect');
+      if (select) {
+        select.innerHTML = '<option value="">Системный микрофон</option>';
+        devices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.textContent = device.label || `Микрофон ${index + 1}`;
+          select.appendChild(option);
+        });
+        if (this.selectedDeviceId && !devices.some(d => d.deviceId === this.selectedDeviceId)) {
+          const option = document.createElement('option');
+          option.value = this.selectedDeviceId;
+          option.textContent = 'Сохранённый микрофон';
+          select.appendChild(option);
+        }
+        select.value = this.selectedDeviceId || '';
+      }
+      this.updateDeviceControls();
+      if (!handleRemoval || !this.hasMicrophonePermission || !this.localStream || this.captureInFlight) return;
+      const activeId = this.localStream.getAudioTracks()[0]?.getSettings?.().deviceId;
+      if (activeId && !devices.some(d => d.deviceId === activeId)) {
+        await this.selectMicrophone(null);
+      }
+    } catch (error) {
+      console.warn('[WebRTC] Cannot enumerate microphones:', error);
+    }
+  }
   // Локальный эхо-тест: воспроизводит свой микрофон в свои наушники на 5 секунд
   startEchoTest() {
     if (!this.localStream) {
@@ -121,7 +224,7 @@ class MafiaVoiceEngine {
       return;
     }
 
-    if (this.isEchoTesting) return;
+    if (this.isEchoTesting || this.captureInFlight) return;
     this.isEchoTesting = true;
 
     try {
@@ -134,26 +237,24 @@ class MafiaVoiceEngine {
       }
 
       const micSource = this.audioContext.createMediaStreamSource(this.localStream);
+      this.echoSource = micSource;
       micSource.connect(this.audioContext.destination);
 
       const btnEcho = document.getElementById('btnEchoTest');
       let countdown = 5;
       if (btnEcho) btnEcho.textContent = `🎧 Говорите... ${countdown}с`;
 
-      const timer = setInterval(() => {
+      this.echoTimer = setInterval(() => {
         countdown--;
         if (countdown > 0 && btnEcho) {
           btnEcho.textContent = `🎧 Говорите... ${countdown}с`;
         } else {
-          clearInterval(timer);
-          try { micSource.disconnect(); } catch (e) {}
-          this.isEchoTesting = false;
-          if (btnEcho) btnEcho.textContent = '🎧 Тест микрофона';
+          this.stopEchoTest();
         }
       }, 1000);
     } catch (e) {
       console.warn("[WebRTC] Ошибка запуска эхо-теста:", e);
-      this.isEchoTesting = false;
+      this.stopEchoTest();
     }
   }
 
@@ -273,12 +374,13 @@ class MafiaVoiceEngine {
       }
 
       const source = this.audioContext.createMediaStreamSource(this.localStream);
+      this.analysisSource = source;
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 256;
       source.connect(this.analyser);
 
       const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-      setInterval(() => {
+      this.analysisTimer = setInterval(() => {
         const state = window.currentGameState;
         const mySlot = state?.slots?.find(s => s.userId === window.myUserId);
         const isMeAlive = mySlot ? mySlot.isAlive : true;
@@ -313,6 +415,23 @@ class MafiaVoiceEngine {
     }
   }
 
+  stopAudioAnalysis() {
+    if (this.analysisTimer !== null) clearInterval(this.analysisTimer);
+    this.analysisTimer = null;
+    try { this.analysisSource?.disconnect(); } catch (_) {}
+    this.analysisSource = null;
+    this.analyser = null;
+  }
+
+  stopEchoTest() {
+    if (this.echoTimer !== null) clearInterval(this.echoTimer);
+    this.echoTimer = null;
+    try { this.echoSource?.disconnect(); } catch (_) {}
+    this.echoSource = null;
+    this.isEchoTesting = false;
+    const button = document.getElementById('btnEchoTest');
+    if (button) button.textContent = '🎧 Тест микрофона';
+  }
   resetPeers() {
     this.peers.forEach(peer => {
       peer.pc.oniceconnectionstatechange = null;
@@ -430,7 +549,11 @@ class MafiaVoiceEngine {
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] ICE статус с ${peerUserId}:`, pc.iceConnectionState);
-      peerInfo.isConnected = (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
+      const iceOk = pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed';
+      // ICE can be "connected" while media flows only one way, so the end-to-end
+      // connection state stays authoritative when the browser reports it.
+      if (pc.connectionState === 'connected') peerInfo.isConnected = true;
+      else if (!iceOk) peerInfo.isConnected = false;
       if (pc.iceConnectionState === 'failed') {
         console.warn(`[WebRTC] ICE failed для ${peerUserId}, перезапуск ICE...`);
         if (myUserId < peerUserId) {
@@ -445,20 +568,27 @@ class MafiaVoiceEngine {
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Статус соединения с ${peerUserId}:`, pc.connectionState);
       peerInfo.isConnected = pc.connectionState === 'connected';
-      if (pc.connectionState === 'failed') {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
         setTimeout(() => {
           const currentPeer = this.peers.get(peerUserId);
-          if (currentPeer && currentPeer.pc && currentPeer.pc.connectionState === 'failed') {
+          if (currentPeer && currentPeer.pc === pc &&
+              (pc.connectionState === 'failed' || pc.connectionState === 'disconnected')) {
             console.log(`[WebRTC] Попытка авто-восстановления связи с ${peerUserId}...`);
             this.reconnectPeer(peerUserId);
           }
-        }, 4000);
+        }, pc.connectionState === 'failed' ? 4000 : 8000);
+      }
+      if (window.currentGameState && window.refreshVoiceIndicators) {
+        window.refreshVoiceIndicators(window.currentGameState);
       }
     };
 
+    // The lower id opens the negotiation, the other side answers. Never start
+    // both: two simultaneous offers put one peer into an unrecoverable glare.
     if (myUserId < peerUserId) {
       this.renegotiatePeer(peerUserId, pc);
     }
+    return peerInfo;
   }
 
   reconnectPeer(peerUserId) {
@@ -472,7 +602,33 @@ class MafiaVoiceEngine {
     } catch (e) {}
 
     this.peers.delete(peerUserId);
-    this.createPeerConnection(peerUserId, window.myUserId);
+    const created = this.createPeerConnection(peerUserId, window.myUserId);
+    // Negotiate even from the side that would normally be the answerer: the
+    // other participant waits for an offer and otherwise stays in P2P forever.
+    if (created) {
+      this.renegotiatePeer(peerUserId, created.pc);
+    }
+  }
+
+  // Repair pairs whose initial offer/answer was lost (for example a peer
+  // created before the signal connection or the microphone was ready).
+  startConnectionWatchdog() {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = setInterval(() => {
+      const signalingReady = window.connection &&
+        (window.connection.state === 'Connected' || window.connection.state === 1);
+      if (!signalingReady) return;
+      this.peers.forEach((peer, peerUserId) => {
+        const pc = peer.pc;
+        if (!pc || pc.signalingState !== 'stable' || peer.isConnected) return;
+        if (pc.connectionState === 'connected') { peer.isConnected = true; return; }
+        const now = Date.now();
+        if (peer.lastNegotiationRequest && now - peer.lastNegotiationRequest < 6000) return;
+        peer.lastNegotiationRequest = now;
+        console.log(`[WebRTC] Повторная попытка соединения с ${peerUserId}`);
+        this.renegotiatePeer(peerUserId, pc);
+      });
+    }, 5000);
   }
 
   renegotiatePeer(peerUserId, pc) {
@@ -532,8 +688,9 @@ class MafiaVoiceEngine {
         }
 
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        peer.transceiver = pc.getTransceivers().find(t => t.receiver.track.kind === 'audio');
-        if (peer.transceiver) peer.transceiver.direction = 'sendrecv';
+        // Keep the direction negotiated by the offer. Switching it to sendrecv
+        // mid-call would require another offer/answer round and, if it never
+        // arrives, audio flows only in one direction.
         peer.sender = peer.transceiver?.sender;
         const track = this.localStream?.getAudioTracks()[0];
         if (peer.sender) {
@@ -584,7 +741,11 @@ class MafiaVoiceEngine {
 
   // СТРОГОЕ УПРАВЛЕНИЕ АУДИОПОТОКАМИ
   applyPhaseVoiceRules(state) {
-    if (!state) return;
+    if (!state) {
+      const track = this.localStream?.getAudioTracks()[0];
+      if (track) track.enabled = !this.userMutedMic;
+      return;
+    }
     window.currentGameState = state;
 
     const mySlot = state.slots.find(s => s.userId === window.myUserId);
