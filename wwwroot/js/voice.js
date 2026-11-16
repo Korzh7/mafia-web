@@ -122,8 +122,7 @@ class MafiaVoiceEngine {
           const sender = peer.sender || peer.pc?.getSenders?.().find(s => s.track?.kind === 'audio');
           if (!sender) continue;
           const previousTrack = sender.track;
-          // A null sender is deliberately detached (night/privacy).
-          await sender.replaceTrack(previousTrack === null ? null : track);
+          await sender.replaceTrack(track);
           changed.push({ sender, previousTrack });
         }
       } catch (error) {
@@ -714,9 +713,9 @@ class MafiaVoiceEngine {
         if (!peer.transceiver) {
           peer.transceiver = pc.getTransceivers().find(t => t.receiver?.track?.kind === 'audio');
         }
-        // Keep the direction negotiated by the offer. Switching it to sendrecv
-        // mid-call would require another offer/answer round and, if it never
-        // arrives, audio flows only in one direction.
+        if (peer.transceiver && peer.transceiver.direction !== 'sendrecv') {
+          peer.transceiver.direction = 'sendrecv';
+        }
         peer.sender = peer.transceiver?.sender;
         const track = this.localStream?.getAudioTracks()[0];
         if (peer.sender) {
