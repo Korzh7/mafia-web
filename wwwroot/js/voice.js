@@ -850,6 +850,18 @@ class MafiaVoiceEngine {
 
     // 2. НОЧЬ (Фаза 1 - Нулевая ночь / договорка мафии, Фаза 4 - Обычная ночь)
     if (state.phase === 1 || state.phase === 4) {
+      if (!isMeMafia) {
+        // Мирные игроки не должны видеть подсветку чужих микрофонов ночью
+        this.activeSpeakers.forEach(speakerId => {
+          if (speakerId !== window.myUserId) {
+            const card = document.querySelector(`.seat-card[data-user-id="${speakerId}"]`);
+            if (card) card.classList.remove('speaking');
+          }
+        });
+        const keep = this.activeSpeakers.has(window.myUserId) ? new Set([window.myUserId]) : new Set();
+        this.activeSpeakers = keep;
+      }
+
       if (isMeMafia) {
         // Живой член мафии: говорит ТОЛЬКО с живыми напарниками
         const canSpeak = !this.userMutedMic;
@@ -911,6 +923,15 @@ class MafiaVoiceEngine {
 
   highlightSpeaker(userId, isSpeaking) {
     if (isSpeaking) {
+      // Защита от утечки ролей: во время ночи мирные жители не должны видеть подсветку речи других игроков
+      const state = window.currentGameState;
+      if (state && (state.phase === 1 || state.phase === 4)) {
+        const mySlot = state.slots?.find(s => s.userId === window.myUserId);
+        const isMeMafia = mySlot && (mySlot.roleCode === 'mafia' || mySlot.roleCode === 'don');
+        if (!isMeMafia && userId !== window.myUserId) {
+          return;
+        }
+      }
       this.activeSpeakers.add(userId);
     } else {
       this.activeSpeakers.delete(userId);

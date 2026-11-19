@@ -201,6 +201,45 @@ public class GameRoomService
         }
     }
 
+    public IReadOnlyList<string> GetAudibleConnectionIdsForSpeaker(string speakerUserId)
+    {
+        lock (_lock)
+        {
+            var speakerSlot = _slots.FirstOrDefault(s => s.UserId == speakerUserId);
+            if (speakerSlot == null || !speakerSlot.IsAlive)
+                return Array.Empty<string>();
+
+            // В ночных фазах (договорка мафии или стрельба)
+            if (Phase is GamePhase.NightZero or GamePhase.Night)
+            {
+                // Говорить может только живая мафия / дон
+                if (speakerSlot.Role is not (PlayerRole.Mafia or PlayerRole.Don))
+                    return Array.Empty<string>();
+
+                // Слышать и видеть подсветку речи могут ТОЛЬКО живые напарники по мафии
+                return _slots
+                    .Where(s => s.IsAlive
+                             && !string.IsNullOrEmpty(s.UserId)
+                             && s.UserId != speakerUserId
+                             && s.Role is PlayerRole.Mafia or PlayerRole.Don)
+                    .Select(s => GetConnectionIdByUserId(s.UserId!) ?? s.ConnectionId)
+                    .Where(c => !string.IsNullOrEmpty(c))
+                    .Select(c => c!)
+                    .Distinct()
+                    .ToList();
+            }
+
+            // В остальных фазах (лобби, день, голосование, финал)
+            return _slots
+                .Where(s => !string.IsNullOrEmpty(s.UserId) && s.UserId != speakerUserId)
+                .Select(s => GetConnectionIdByUserId(s.UserId!) ?? s.ConnectionId)
+                .Where(c => !string.IsNullOrEmpty(c))
+                .Select(c => c!)
+                .Distinct()
+                .ToList();
+        }
+    }
+
     public (bool Success, string Message) TakeSlot(int slotNumber, string userId, string nickname, string connectionId)
     {
         lock (_lock)

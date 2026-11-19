@@ -73,7 +73,12 @@ public class GameHub : Hub
         {
             return;
         }
-        await Clients.Others.SendAsync("OnVoiceActivity", userId, isSpeaking);
+
+        var recipients = _gameService.GetAudibleConnectionIdsForSpeaker(userId);
+        if (recipients.Count > 0)
+        {
+            await Clients.Clients(recipients).SendAsync("OnVoiceActivity", userId, isSpeaking);
+        }
     }
 
     public async Task UpdateNickname(string userId, string nickname)

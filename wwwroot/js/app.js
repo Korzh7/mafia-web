@@ -403,7 +403,12 @@ function renderSeats(state) {
     if (slot.userId) {
       card.setAttribute('data-user-id', slot.userId);
       if (window.mafiaVoice && window.mafiaVoice.activeSpeakers && window.mafiaVoice.activeSpeakers.has(slot.userId)) {
-        card.classList.add('speaking');
+        const isNight = state.phase === 1 || state.phase === 4;
+        const mySlot = state.slots?.find(s => s.userId === window.myUserId);
+        const isMeMafia = mySlot && (mySlot.roleCode === 'mafia' || mySlot.roleCode === 'don');
+        if (!isNight || isMeMafia || slot.userId === window.myUserId) {
+          card.classList.add('speaking');
+        }
       }
     }
 
